@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import secrets
 import socket
 import sys
 import time
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -32,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .geometry import Insets, Rect, apply_insets, fit_aspect, insets_from_selection
+from .invite import make_invite, parse_invite, relay_url_for_host
 from .protocol import sanitize, valid_room
 from .relay import DEFAULT_PORT, RelayThread
 from .strokes import StrokeStore
@@ -43,6 +46,7 @@ if sys.platform == "win32":
 
 TRACK_MS = 16
 PICK_SECONDS = 3
+PUBLIC_IP_URL = "https://api.ipify.org"
 ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 HOTKEY_DRAW, HOTKEY_CLEAR_MINE, HOTKEY_CLEAR_ALL = 1, 2, 3
@@ -86,10 +90,13 @@ class MainWindow(QWidget):
         self._sent_size: tuple[int, int] | None = None
         self._last_region: Rect | None = None
         self._pick_left = 0
+        self._net = QNetworkAccessManager(self)
+        self._public_ip: str | None = None
 
         self._build_ui()
         self._load_settings()
         self._wire()
+        self._prefill_invite_from_clipboard()
         self._register_hotkeys()
         self.refresh_windows(restore=True)
 
@@ -115,6 +122,16 @@ class MainWindow(QWidget):
 
         conn_box = QGroupBox("Room")
         conn = QFormLayout(conn_box)
+        self.conn_form = conn
+        self.invite_edit = QLineEdit()
+        self.invite_edit.setPlaceholderText("Paste the invite link from the streamer")
+        self.invite_edit.setClearButtonEnabled(True)
+        conn.addRow("Invite link", self.invite_edit)
+        self.invite_status = QLabel()
+        self.invite_status.setWordWrap(True)
+        conn.addRow("", self.invite_status)
+        self.manual_check = QCheckBox("Enter relay address and room code manually")
+        conn.addRow("", self.manual_check)
         self.url_edit = QLineEdit()
         self.url_edit.setPlaceholderText("ws://host-ip:8765")
         conn.addRow("Relay server", self.url_edit)
@@ -132,9 +149,12 @@ class MainWindow(QWidget):
         self.room_edit.setMaxLength(32)
         self.new_room_btn = QPushButton("New")
         room_row = QHBoxLayout()
+        room_row.setContentsMargins(0, 0, 0, 0)
         room_row.addWidget(self.room_edit)
         room_row.addWidget(self.new_room_btn)
-        conn.addRow("Room code", room_row)
+        self.room_row_widget = QWidget()
+        self.room_row_widget.setLayout(room_row)
+        conn.addRow("Room code", self.room_row_widget)
         self.name_edit = QLineEdit()
         self.name_edit.setMaxLength(32)
         conn.addRow("Your name", self.name_edit)
@@ -146,6 +166,22 @@ class MainWindow(QWidget):
         self.status_label.setWordWrap(True)
         self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         conn.addRow(self.status_label)
+
+        invite_row = QHBoxLayout()
+        invite_row.setContentsMargins(0, 0, 0, 0)
+        self.invite_scope = QComboBox()
+        self.invite_scope.addItem("Viewers on the internet", "public")
+        self.invite_scope.addItem("Viewers on my home network", "lan")
+        self.copy_invite_btn = QPushButton("Copy invite link")
+        invite_row.addWidget(self.invite_scope)
+        invite_row.addWidget(self.copy_invite_btn)
+        self.host_invite_widget = QWidget()
+        self.host_invite_widget.setLayout(invite_row)
+        conn.addRow(self.host_invite_widget)
+        self.invite_note = QLabel()
+        self.invite_note.setWordWrap(True)
+        self.invite_note.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        conn.addRow(self.invite_note)
         root.addWidget(conn_box)
 
         win_box = QGroupBox("Window to draw on")
@@ -215,6 +251,12 @@ class MainWindow(QWidget):
         self.color_btn.clicked.connect(self._choose_color)
         self.connect_btn.clicked.connect(self._toggle_connection)
         self.relay_check.toggled.connect(self._update_role_ui)
+        self.manual_check.toggled.connect(self._update_role_ui)
+        self.invite_edit.textChanged.connect(self._on_invite_text)
+        self.invite_edit.returnPressed.connect(self._toggle_connection)
+        self.copy_invite_btn.clicked.connect(self._copy_invite)
+        self.invite_scope.currentIndexChanged.connect(lambda _: self.invite_note.clear())
+        QApplication.clipboard().dataChanged.connect(self._prefill_invite_from_clipboard)
         self.refresh_btn.clicked.connect(lambda: self.refresh_windows())
         self.pick_btn.clicked.connect(self._start_pick)
         self.window_combo.activated.connect(self._on_combo_activated)
@@ -257,6 +299,9 @@ class MainWindow(QWidget):
         self.hide_unfocused_check.setChecked(s.value("hide_unfocused", True, type=bool))
         self.exclude_capture_check.setChecked(s.value("exclude_capture", True, type=bool))
         self.overlay.set_exclude_from_capture(self.exclude_capture_check.isChecked())
+        self.manual_check.setChecked(s.value("viewer/manual", False, type=bool))
+        scope_index = self.invite_scope.findData(s.value("host/invite_scope", "public"))
+        self.invite_scope.setCurrentIndex(max(scope_index, 0))
         self._apply_pen()
         self._update_role_ui()
         self._update_insets_label()
@@ -273,6 +318,8 @@ class MainWindow(QWidget):
         s.setValue("pen/width", self.width_spin.value())
         s.setValue("pen/ttl", self.ttl_spin.value())
         s.setValue("viewer/fit", self.fit_check.isChecked())
+        s.setValue("viewer/manual", self.manual_check.isChecked())
+        s.setValue("host/invite_scope", self.invite_scope.currentData())
         s.setValue("viewer/insets", self.insets.as_list())
         s.setValue("hide_unfocused", self.hide_unfocused_check.isChecked())
         s.setValue("exclude_capture", self.exclude_capture_check.isChecked())
@@ -286,10 +333,21 @@ class MainWindow(QWidget):
     def _on_role_changed(self, _checked: bool) -> None:
         self._sent_size = None
         self._update_role_ui()
+        self._prefill_invite_from_clipboard()
 
     def _update_role_ui(self) -> None:
         host = self.role == "host"
-        self.relay_row_widget.setVisible(host)
+        manual = host or self.manual_check.isChecked()
+        form = self.conn_form
+        form.setRowVisible(self.invite_edit, not host)
+        form.setRowVisible(self.invite_status, not host)
+        form.setRowVisible(self.manual_check, not host)
+        form.setRowVisible(self.url_edit, manual)
+        form.setRowVisible(self.room_row_widget, manual)
+        form.setRowVisible(self.relay_row_widget, host)
+        form.setRowVisible(self.host_invite_widget, host)
+        form.setRowVisible(self.invite_note, host)
+        self.new_room_btn.setVisible(host)
         self.url_edit.setEnabled(not (host and self.relay_check.isChecked()))
         self.video_box.setVisible(not host)
         self.clear_all_btn.setVisible(host)
@@ -351,6 +409,13 @@ class MainWindow(QWidget):
             self._connect()
 
     def _connect(self) -> None:
+        if self.role == "viewer" and not self.manual_check.isChecked():
+            invite = parse_invite(self.invite_edit.text())
+            if invite is None:
+                QMessageBox.information(self, "Telecaster", "Paste the invite link the streamer sent you.")
+                return
+            self.url_edit.setText(invite[0])
+            self.room_edit.setText(invite[1])
         room = self.room_edit.text().strip()
         if not valid_room(room):
             QMessageBox.warning(self, "Telecaster", "Room codes are 3-32 letters, digits, - or _.")
@@ -375,7 +440,8 @@ class MainWindow(QWidget):
         self.session.open(url, room, self.name_edit.text().strip(), self.overlay.pen_color, self.role)
         self.connect_btn.setText("Disconnect")
         for widget in (self.host_radio, self.viewer_radio, self.room_edit, self.url_edit,
-                       self.relay_check, self.port_spin, self.name_edit, self.color_btn, self.new_room_btn):
+                       self.relay_check, self.port_spin, self.name_edit, self.color_btn, self.new_room_btn,
+                       self.invite_edit, self.manual_check):
             widget.setEnabled(False)
 
     def _disconnect(self) -> None:
@@ -388,9 +454,95 @@ class MainWindow(QWidget):
             return
         self.connect_btn.setText("Connect")
         for widget in (self.host_radio, self.viewer_radio, self.room_edit, self.relay_check,
-                       self.port_spin, self.name_edit, self.color_btn, self.new_room_btn):
+                       self.port_spin, self.name_edit, self.color_btn, self.new_room_btn,
+                       self.invite_edit, self.manual_check):
             widget.setEnabled(True)
         self._update_role_ui()
+
+    # -- invite links --------------------------------------------------------
+
+    def _on_invite_text(self, text: str) -> None:
+        invite = parse_invite(text)
+        if invite is not None:
+            relay, room = invite
+            self.url_edit.setText(relay)
+            self.room_edit.setText(room)
+            self.invite_status.setText(f"Room {room} via {relay} — press Connect.")
+        elif text.strip():
+            self.invite_status.setText("That isn't a Telecaster invite link (they start with telecaster://).")
+        else:
+            self.invite_status.clear()
+
+    def _prefill_invite_from_clipboard(self) -> None:
+        """Save viewers a paste: pick up an invite link they just copied."""
+        if self.role != "viewer" or self.session.wants_connection or self.manual_check.isChecked():
+            return
+        if parse_invite(self.invite_edit.text()) is not None:
+            return
+        invite = parse_invite(QApplication.clipboard().text())
+        if invite is not None:
+            self.invite_edit.setText(make_invite(*invite))
+
+    def _copy_invite(self) -> None:
+        room = self.room_edit.text().strip()
+        if not valid_room(room):
+            QMessageBox.warning(self, "Telecaster", "Pick a room code first (click New).")
+            return
+        if not self.relay_check.isChecked():
+            # Using someone else's relay: the address is already public.
+            url = self.url_edit.text().strip()
+            if not url.startswith(("ws://", "wss://")):
+                QMessageBox.warning(self, "Telecaster", "Enter the relay address first.")
+                return
+            self._finish_invite(url, "Anyone with the link can join.")
+            return
+        port = self.port_spin.value()
+        if self.invite_scope.currentData() == "lan":
+            self._finish_invite(relay_url_for_host(lan_ip(), port),
+                                "Works for viewers on the same network as this PC.")
+            return
+        if self._public_ip:
+            self._finish_public_invite()
+            return
+        self.copy_invite_btn.setEnabled(False)
+        self.invite_note.setText("Looking up your public IP address…")
+        request = QNetworkRequest(QUrl(PUBLIC_IP_URL))
+        request.setTransferTimeout(5000)
+        reply = self._net.get(request)
+        reply.finished.connect(lambda: self._on_public_ip(reply))
+
+    def _on_public_ip(self, reply: QNetworkReply) -> None:
+        self.copy_invite_btn.setEnabled(True)
+        text = bytes(reply.readAll()).decode("ascii", "replace").strip()
+        failed = reply.error() != QNetworkReply.NoError
+        reply.deleteLater()
+        try:
+            ipaddress.ip_address(text)
+        except ValueError:
+            failed = True
+        if failed:
+            self.invite_note.setText("Couldn't look up your public IP address. Check your connection, "
+                                     "or switch to \"Viewers on my home network\".")
+            return
+        self._public_ip = text
+        self._finish_public_invite()
+
+    def _finish_public_invite(self) -> None:
+        port = self.port_spin.value()
+        self._finish_invite(
+            relay_url_for_host(self._public_ip, port),
+            f"Viewers outside your network can only connect if your router forwards TCP port {port} "
+            f"to this PC ({lan_ip()}).")
+
+    def _finish_invite(self, relay_url: str, note: str) -> None:
+        link = make_invite(relay_url, self.room_edit.text().strip())
+        clipboard = QApplication.clipboard()
+        clipboard.setText(link)
+        # Another app holding the Windows clipboard open makes the copy fail silently.
+        copied = clipboard.text() == link
+        head = "Invite link copied — paste it in Discord." if copied else \
+            "Couldn't reach the clipboard (another app may be using it); copy the link below by hand."
+        self.invite_note.setText(f"{head} {note}\n{link}")
 
     def _stop_relay(self) -> None:
         if self.relay is not None:
@@ -403,11 +555,9 @@ class MainWindow(QWidget):
         if source and self.role == "viewer":
             self._set_source(source)
         self._sent_size = None  # host re-announces its window size
-        if self.role == "host" and self.relay is not None:
-            port = self.relay.port
+        if self.role == "host":
             self.status_label.setText(
-                f"Hosting room {welcome.get('room')}. Viewers on your network use ws://{lan_ip()}:{port}. "
-                f"Over the internet, forward TCP port {port} and share ws://<your public IP>:{port}.")
+                f"Hosting room {welcome.get('room')}. Click \"Copy invite link\" and paste it to your viewers.")
         self._update_peers()
 
     def _on_message(self, msg: dict) -> None:

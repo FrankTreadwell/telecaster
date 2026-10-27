@@ -76,15 +76,19 @@ Then run `telecaster` (or `python -m telecaster`).
 
 1. Choose **Streaming (host)**.
 2. Keep **Run the relay on this PC** ticked, click **New** for a room code,
-   and **Connect**. The status line shows the address viewers need.
+   and **Connect**.
 3. Under **Window to draw on**, choose your game. Play in borderless or
    windowed mode — no overlay can draw over exclusive fullscreen.
-4. Share the room code and address with your viewers (e.g. in the Discord chat).
+4. Pick who's watching (**Viewers on the internet** or **on my home
+   network**), click **Copy invite link**, and paste it in the Discord chat.
+   For internet viewers, your router must forward the relay's TCP port
+   (8765 by default) to your PC — see [Hosting the relay](#hosting-the-relay).
 
 **Viewers**
 
-1. Choose **Watching (viewer)**, enter the relay address and room code, and
-   **Connect**.
+1. Copy the streamer's invite link, open Telecaster, and choose **Watching
+   (viewer)**. The link is filled in from your clipboard automatically (or
+   paste it into **Invite link**). Press **Connect**.
 2. Choose the Discord window that shows the stream. Full-screening the stream
    in Discord (or popping it out) gives the most accurate lines.
 3. If Discord's UI surrounds the video, click **Mark video area…** and drag a
@@ -101,12 +105,16 @@ Then run `telecaster` (or `python -m telecaster`).
 
 ## Hosting the relay
 
-Viewers must be able to reach the relay. Options, easiest first:
+Invite links (`telecaster://join?relay=…&room=…`) carry the relay address and
+room code, so viewers never type either. Viewers still have to be able to
+reach that address. Options, easiest first:
 
-- **Same network**: use the `ws://192.168.x.x:8765` address the app shows.
-- **Port forwarding**: forward TCP 8765 on the streamer's router to their PC
-  and share `ws://<public IP>:8765`.
-- **A VPN mesh** such as Tailscale or ZeroTier: share the streamer's VPN IP.
+- **Same network**: choose "Viewers on my home network" before copying the link.
+- **Port forwarding**: forward TCP 8765 on the streamer's router to their PC.
+  "Viewers on the internet" links use your public IP, which the app looks up
+  from [ipify](https://www.ipify.org) when you copy the link.
+- **A VPN mesh** such as Tailscale or ZeroTier: viewers tick "Enter relay
+  address and room code manually" and use `ws://<streamer's VPN IP>:8765`.
 - **A small server**: the relay only needs `websockets`:
 
   ```bash
@@ -141,6 +149,7 @@ Layout:
 | Module         | Role                                                         |
 |----------------|--------------------------------------------------------------|
 | `protocol.py`  | Message schema and validation shared by client and relay     |
+| `invite.py`    | Invite link format (relay address + room in one string)     |
 | `relay.py`     | asyncio WebSocket relay (standalone or in a background thread) |
 | `geometry.py`  | Aspect fitting, insets, normalization (pure, tested)         |
 | `strokes.py`   | Stroke/ping model with fading (pure, tested)                 |
