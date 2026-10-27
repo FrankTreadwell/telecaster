@@ -27,7 +27,7 @@ exact same spot, even when the sharer runs at 1440p and the viewer watches a
 - **Self-hostable.** The relay is a tiny server that can run inside the app
   or on any machine.
 
-> Status: early alpha. Windows 10 (2004+) / 11 only for the overlay app. The
+> Status: beta. The app runs on Windows 10 (2004+) / 11 and macOS 11+. The
 > relay server runs anywhere Python does.
 
 ## How it works
@@ -60,21 +60,28 @@ don't appear twice (once live, once delayed in the shared video).
 
 ## Install
 
-Requires Python 3.10+ on Windows.
+Download the latest build from the
+[Releases page](https://github.com/FrankTreadwell/telecaster/releases):
+
+- **Windows 10/11** — `Telecaster-…-windows-x64.exe`. No installer; just run
+  it. The app isn't code-signed yet, so SmartScreen may say "Windows
+  protected your PC": click **More info → Run anyway**.
+- **macOS 11+, Apple Silicon** — `Telecaster-…-macos-arm64.zip`. Unzip and
+  drag **Telecaster** into Applications. It isn't notarized yet, so the
+  first time you open it macOS will refuse; go to **System Settings →
+  Privacy & Security** and click **Open Anyway**.
+
+  macOS will also ask for two optional permissions:
+  - **Accessibility**, so the hotkeys work while another app is in front.
+  - **Screen Recording**, only so the window picker can show window titles
+    (otherwise windows are listed by app name). Telecaster never records.
+
+**From source** (any Python 3.10+, including Intel Macs):
 
 ```bash
-pip install git+https://github.com/<you>/telecaster
+pip install git+https://github.com/FrankTreadwell/telecaster
+telecaster
 ```
-
-Or from a checkout:
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e .
-```
-
-Then run `telecaster` (or `python -m telecaster`).
 
 ## Quick start
 
@@ -105,11 +112,11 @@ Then run `telecaster` (or `python -m telecaster`).
    right-click to ping. Press **Ctrl+Alt+D** again to give clicks back to the
    window underneath.
 
-| Hotkey       | Action                                  |
-|--------------|-----------------------------------------|
-| Ctrl+Alt+D   | Toggle draw mode                        |
-| Ctrl+Alt+C   | Clear your own lines                    |
-| Ctrl+Alt+X   | Clear everyone's lines (sharer only)    |
+| Windows      | macOS | Action                                  |
+|--------------|-------|-----------------------------------------|
+| Ctrl+Alt+D   | ⌃⌥D   | Toggle draw mode                        |
+| Ctrl+Alt+C   | ⌃⌥C   | Clear your own lines                    |
+| Ctrl+Alt+X   | ⌃⌥X   | Clear everyone's lines (sharer only)    |
 
 ## Hosting the relay
 
@@ -150,7 +157,22 @@ macOS or Linux overlay) only requires speaking this protocol.
 ```bash
 pip install -e .[dev]
 pytest
+python packaging/platform_smoke.py      # needs a desktop session
 ```
+
+Building the app locally (output in `dist/`):
+
+```bash
+pip install -e .[build]
+pyinstaller packaging/telecaster.spec --noconfirm
+```
+
+### Releasing
+
+Bump the version in `pyproject.toml` and `src/telecaster/__init__.py`,
+commit, then tag and push, e.g. `git tag v0.2.0b1 && git push origin v0.2.0b1`.
+GitHub Actions tests and builds on Windows and macOS and publishes a release
+with both downloads (marked pre-release for `a`/`b`/`rc` versions).
 
 Layout:
 
@@ -161,17 +183,20 @@ Layout:
 | `relay.py`     | asyncio WebSocket relay (standalone or in a background thread) |
 | `geometry.py`  | Aspect fitting, insets, normalization (pure, tested)         |
 | `strokes.py`   | Stroke/ping model with fading (pure, tested)                 |
-| `winapi.py`    | Win32: window list, client rects, click-through, hotkeys     |
+| `platforms/`   | Per-OS window list, tracking, click-through, hotkeys (`windows.py`, `macos.py`) |
 | `overlay.py`   | The transparent Qt overlay window: input and painting        |
 | `net.py`       | QWebSocket relay client with auto-reconnect                  |
 | `app.py`       | Control window that ties it together                         |
 
 ### Known limitations / ideas
 
-- Exclusive-fullscreen games can't be overlaid (a Windows limitation).
+- Exclusive-fullscreen games can't be overlaid on Windows; use borderless.
+- On macOS the overlay covers the whole window including its title bar,
+  since that's what screen-sharing apps capture there.
 - Screen-sharing video lags a little, so marks arrive slightly *before* the
   viewer's video shows the moment they drew on. Usually that's what you want.
-- macOS/Linux overlay support would need a `winapi.py` equivalent.
+- Linux support would need a `platforms/linux.py` (see `platforms/base.py`).
+- Builds aren't code-signed or notarized yet.
 - Ideas: arrows and shapes, undo, a per-viewer mute for the sharer, a
   hosted public relay.
 

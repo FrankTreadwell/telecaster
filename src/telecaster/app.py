@@ -8,6 +8,7 @@ import secrets
 import socket
 import sys
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QIcon, QPixmap
@@ -39,10 +40,15 @@ from .protocol import sanitize, valid_room
 from .relay import DEFAULT_PORT, RelayThread
 from .strokes import StrokeStore
 
-if sys.platform == "win32":
-    from . import winapi
-    from .net import Session
+from .net import Session
+
+try:
     from .overlay import LOCAL, Overlay
+    from .platforms import current as platform
+    PLATFORM_ERROR = None
+except ImportError as exc:  # unsupported OS, or a missing platform dependency
+    platform = None
+    PLATFORM_ERROR = exc
 
 TRACK_MS = 16
 PICK_SECONDS = 3
@@ -50,11 +56,11 @@ PUBLIC_IP_URL = "https://api.ipify.org"
 ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 HOTKEY_DRAW, HOTKEY_CLEAR_MINE, HOTKEY_CLEAR_ALL = 1, 2, 3
-HOTKEYS = {
-    HOTKEY_DRAW: (0x44, "Ctrl+Alt+D"),  # D
-    HOTKEY_CLEAR_MINE: (0x43, "Ctrl+Alt+C"),  # C
-    HOTKEY_CLEAR_ALL: (0x58, "Ctrl+Alt+X"),  # X
-}
+HOTKEYS = {HOTKEY_DRAW: "D", HOTKEY_CLEAR_MINE: "C", HOTKEY_CLEAR_ALL: "X"}
+
+
+def hotkey_label(hotkey_id: int) -> str:
+    return platform.hotkey_label(HOTKEYS[hotkey_id])
 
 
 def new_room_code() -> str:
@@ -83,7 +89,7 @@ class MainWindow(QWidget):
         self.session = Session(self)
         self.relay: RelayThread | None = None
 
-        self.target_hwnd = 0
+        self.target_wid = 0
         self.source_aspect: float | None = None
         self.source_size: tuple[int, int] | None = None
         self.insets = Insets.from_list(self.settings.value("viewer/insets", [0, 0, 0, 0]))
@@ -225,12 +231,12 @@ class MainWindow(QWidget):
         self.ttl_spin = QDoubleSpinBox(minimum=0, maximum=600, value=4, decimals=1, suffix=" s")
         self.ttl_spin.setSpecialValueText("never")
         pen.addRow("Fade after", self.ttl_spin)
-        self.draw_btn = QPushButton(f"Draw mode  [{HOTKEYS[HOTKEY_DRAW][1]}]")
+        self.draw_btn = QPushButton(f"Draw mode  [{hotkey_label(HOTKEY_DRAW)}]")
         self.draw_btn.setCheckable(True)
         pen.addRow(self.draw_btn)
         clear_row = QHBoxLayout()
-        self.clear_mine_btn = QPushButton(f"Clear mine  [{HOTKEYS[HOTKEY_CLEAR_MINE][1]}]")
-        self.clear_all_btn = QPushButton(f"Clear everyone's  [{HOTKEYS[HOTKEY_CLEAR_ALL][1]}]")
+        self.clear_mine_btn = QPushButton(f"Clear mine  [{hotkey_label(HOTKEY_CLEAR_MINE)}]")
+        self.clear_all_btn = QPushButton(f"Clear everyone's  [{hotkey_label(HOTKEY_CLEAR_ALL)}]")
         clear_row.addWidget(self.clear_mine_btn)
         clear_row.addWidget(self.clear_all_btn)
         pen.addRow(clear_row)
@@ -593,39 +599,39 @@ class MainWindow(QWidget):
     # -- target window -------------------------------------------------------
 
     def refresh_windows(self, restore: bool = False) -> None:
-        windows = winapi.list_windows(exclude_pid=self.pid)
+        windows = platform.list_windows(exclude_pid=self.pid)
         self.window_combo.clear()
         self.window_combo.addItem("— choose a window —", 0)
         for info in windows:
-            self.window_combo.addItem(info.label, info.hwnd)
+            self.window_combo.addItem(info.label, info.wid)
         if restore:
             want_title = self.settings.value(f"{self.role}/target_title", "")
             want_exe = self.settings.value(f"{self.role}/target_exe", "")
-            match = next((w for w in windows if w.title == want_title and w.exe == want_exe), None)
+            match = next((w for w in windows if w.title == want_title and w.app == want_exe), None)
             if match is None and want_exe:
-                same_exe = [w for w in windows if w.exe == want_exe]
+                same_exe = [w for w in windows if w.app == want_exe]
                 match = same_exe[0] if len(same_exe) == 1 else None
             if match:
-                self._set_target(match.hwnd)
+                self._set_target(match.wid)
         self._sync_combo()
 
     def _sync_combo(self) -> None:
-        index = self.window_combo.findData(self.target_hwnd) if self.target_hwnd else 0
-        if index < 0 and self.target_hwnd:
-            self.window_combo.addItem(winapi.window_title(self.target_hwnd) or "(untitled)", self.target_hwnd)
+        index = self.window_combo.findData(self.target_wid) if self.target_wid else 0
+        if index < 0 and self.target_wid:
+            self.window_combo.addItem(platform.window_title(self.target_wid) or "(untitled)", self.target_wid)
             index = self.window_combo.count() - 1
         self.window_combo.setCurrentIndex(max(index, 0))
 
     def _on_combo_activated(self, index: int) -> None:
         self._set_target(int(self.window_combo.itemData(index) or 0))
 
-    def _set_target(self, hwnd: int) -> None:
-        self.target_hwnd = hwnd
+    def _set_target(self, wid: int) -> None:
+        self.target_wid = wid
         self._sent_size = None
         self._last_region = None
-        if hwnd:
-            self.settings.setValue(f"{self.role}/target_title", winapi.window_title(hwnd))
-            self.settings.setValue(f"{self.role}/target_exe", winapi.window_exe(hwnd))
+        if wid:
+            self.settings.setValue(f"{self.role}/target_title", platform.window_title(wid))
+            self.settings.setValue(f"{self.role}/target_exe", platform.window_app(wid))
         else:
             self.overlay.hide()
             self.track_label.setText("No window selected")
@@ -643,11 +649,11 @@ class MainWindow(QWidget):
             return
         self.pick_btn.setText(f"Pick by focusing it ({PICK_SECONDS}s)")
         self.pick_btn.setEnabled(True)
-        hwnd = winapi.foreground_window()
-        if not hwnd or winapi.window_pid(hwnd) == self.pid:
+        wid = platform.frontmost_window(exclude_pid=self.pid)
+        if not wid:
             self.track_label.setText("Picked Telecaster itself — click the target window during the countdown.")
             return
-        self._set_target(hwnd)
+        self._set_target(wid)
         self._sync_combo()
         self.raise_()
         self.activateWindow()
@@ -655,7 +661,7 @@ class MainWindow(QWidget):
     # -- viewer video area ---------------------------------------------------
 
     def _start_calibration(self) -> None:
-        if not self.target_hwnd:
+        if not self.target_wid:
             QMessageBox.information(self, "Telecaster", "Choose the window showing the shared screen first.")
             return
         self.draw_btn.setChecked(False)
@@ -663,7 +669,7 @@ class MainWindow(QWidget):
 
     def _on_calibrated(self, fx: float, fy: float, fw: float, fh: float) -> None:
         self.overlay.set_mode("passive")
-        client = winapi.client_rect(self.target_hwnd)
+        client = platform.target_rect(self.target_wid)
         if client is None:
             return
         sel = Rect(round(fx * client.w), round(fy * client.h), round(fw * client.w), round(fh * client.h))
@@ -694,21 +700,20 @@ class MainWindow(QWidget):
         return region
 
     def _tick(self) -> None:
-        hwnd = self.target_hwnd
-        if not hwnd:
+        wid = self.target_wid
+        if not wid:
             return
-        if not winapi.is_window(hwnd):
+        if not platform.window_exists(wid):
             self._set_target(0)
             self._sync_combo()
             self.track_label.setText("The selected window was closed.")
             return
-        client = winapi.client_rect(hwnd)
+        client = platform.target_rect(wid)
         if client is None:
             self.overlay.hide()
             return
         if self.hide_unfocused_check.isChecked() and self.overlay.mode == "passive":
-            fg = winapi.foreground_window()
-            if fg and fg != hwnd and winapi.window_pid(fg) != self.pid:
+            if not platform.is_in_front(wid, self.pid):
                 self.overlay.hide()
                 return
 
@@ -726,30 +731,23 @@ class MainWindow(QWidget):
     # -- hotkeys -------------------------------------------------------------
 
     def _register_hotkeys(self) -> None:
-        hwnd = int(self.winId())
-        failed = []
-        for hotkey_id, (vk, label) in HOTKEYS.items():
-            if not winapi.register_hotkey(hwnd, hotkey_id, winapi.MOD_CONTROL | winapi.MOD_ALT, vk):
-                failed.append(label)
-        if failed:
-            self.status_label.setText(f"Hotkeys already in use by another app: {', '.join(failed)}")
+        self.hotkeys = platform.GlobalHotkeys(self)
+        self.hotkeys.activated.connect(self._on_hotkey)
+        for hotkey_id, letter in HOTKEYS.items():
+            self.hotkeys.register(hotkey_id, letter)
+        problem = self.hotkeys.problem()
+        if problem:
+            self.status_label.setText(problem)
 
-    def nativeEvent(self, event_type, message):
-        if bytes(event_type) == b"windows_generic_MSG":
-            msg = winapi.msg_from_address(int(message))
-            if msg.message == winapi.WM_HOTKEY:
-                action = {HOTKEY_DRAW: self.toggle_draw, HOTKEY_CLEAR_MINE: self.clear_mine,
-                          HOTKEY_CLEAR_ALL: self.clear_all}.get(int(msg.wParam))
-                if action:
-                    action()
-                return True, 0
-        return super().nativeEvent(event_type, message)
+    def _on_hotkey(self, hotkey_id: int) -> None:
+        action = {HOTKEY_DRAW: self.toggle_draw, HOTKEY_CLEAR_MINE: self.clear_mine,
+                  HOTKEY_CLEAR_ALL: self.clear_all}.get(hotkey_id)
+        if action:
+            action()
 
     def closeEvent(self, event) -> None:
         self._save_settings()
-        hwnd = int(self.winId())
-        for hotkey_id in HOTKEYS:
-            winapi.unregister_hotkey(hwnd, hotkey_id)
+        self.hotkeys.unregister_all()
         self.session.close()
         self._stop_relay()
         self.overlay.close()
@@ -759,11 +757,18 @@ class MainWindow(QWidget):
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Telecaster")
-    if sys.platform != "win32":
-        QMessageBox.critical(None, "Telecaster", "Telecaster's overlay currently supports Windows only.\n"
+    if platform is None:
+        QMessageBox.critical(None, "Telecaster", f"Telecaster can't run here: {PLATFORM_ERROR}\n\n"
+                             "The overlay supports Windows and macOS. "
                              "The relay server (telecaster-relay) runs anywhere.")
         sys.exit(1)
+    icon_path = Path(__file__).with_name("assets") / "icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow()
     window.show()
     app.setQuitOnLastWindowClosed(True)
+    if "--self-test" in sys.argv:
+        # Used by CI on packaged builds: start up fully, then exit cleanly.
+        QTimer.singleShot(2000, window.close)
     sys.exit(app.exec())

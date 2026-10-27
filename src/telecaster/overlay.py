@@ -18,8 +18,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
-from . import winapi
 from .geometry import Rect, normalize
+from .platforms import current as platform
 from .protocol import MAX_POINTS_PER_MESSAGE
 from .strokes import StrokeStore
 
@@ -54,7 +54,6 @@ class Overlay(QWidget):
         self.pen_ttl = 4.0
         self.exclude_from_capture = False
 
-        self._hwnd = 0
         self._sids = itertools.count(1)
         self._sid: str | None = None
         self._pending: list[list[float]] = []
@@ -69,26 +68,25 @@ class Overlay(QWidget):
 
     # -- window management -------------------------------------------------
 
-    def ensure_native(self) -> None:
-        if self._hwnd:
-            return
-        self._hwnd = int(self.winId())
-        winapi.make_overlay_style(self._hwnd)
-        winapi.set_click_through(self._hwnd, self.mode == "passive")
-        winapi.set_exclude_from_capture(self._hwnd, self.exclude_from_capture)
+    def _apply_native(self) -> None:
+        platform.prepare_overlay(self)
+        platform.overlay_click_through(self, self.mode == "passive")
+        platform.overlay_exclude_from_capture(self, self.exclude_from_capture)
 
     def place(self, rect: Rect) -> None:
-        """Cover ``rect`` (physical screen pixels) exactly."""
-        self.ensure_native()
+        """Cover ``rect`` (in the platform's screen coordinates) exactly."""
         if not self.isVisible():
+            # Before showing so Windows never shows a click-blocking frame;
+            # after, because macOS only has a native window once shown.
+            self._apply_native()
             self.show()
-        if winapi.window_rect(self._hwnd) != rect:
-            winapi.place_topmost(self._hwnd, rect)
+            self._apply_native()
+        platform.place_overlay(self, rect)
 
     def set_exclude_from_capture(self, enabled: bool) -> None:
         self.exclude_from_capture = enabled
-        if self._hwnd:
-            winapi.set_exclude_from_capture(self._hwnd, enabled)
+        if self.isVisible():
+            platform.overlay_exclude_from_capture(self, enabled)
 
     def set_mode(self, mode: str) -> None:
         if mode == self.mode:
@@ -97,8 +95,8 @@ class Overlay(QWidget):
             self._finish_stroke()
         self.mode = mode
         self._cal_start = self._cal_end = None
-        if self._hwnd:
-            winapi.set_click_through(self._hwnd, mode == "passive")
+        if self.isVisible():
+            platform.overlay_click_through(self, mode == "passive")
         self.setCursor(Qt.ArrowCursor if mode == "passive" else Qt.CrossCursor)
         self.update()
 

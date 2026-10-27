@@ -1,4 +1,4 @@
-"""Thin ctypes wrappers over the Win32 calls Telecaster needs.
+"""Windows platform layer: thin ctypes wrappers over the Win32 calls Telecaster needs.
 
 Everything here works in physical pixels. Qt 6 makes the process per-monitor
 DPI aware, so Win32 reports real pixel coordinates on every monitor.
@@ -10,12 +10,15 @@ import ctypes
 import os
 import sys
 from ctypes import wintypes
-from dataclasses import dataclass
 
-from .geometry import Rect
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import QWidget
 
-if sys.platform != "win32":  # pragma: no cover - guarded by the app entry point
-    raise ImportError("telecaster.winapi is only available on Windows")
+from ..geometry import Rect
+from .base import WindowInfo
+
+if sys.platform != "win32":  # pragma: no cover - selected by platforms/__init__
+    raise ImportError("telecaster.platforms.windows is only available on Windows")
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -90,17 +93,6 @@ kernel32.QueryFullProcessImageNameW.argtypes = [
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
 dwmapi.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
-
-
-@dataclass(frozen=True)
-class WindowInfo:
-    hwnd: int
-    title: str
-    exe: str
-
-    @property
-    def label(self) -> str:
-        return f"{self.title}  —  {self.exe}" if self.exe else self.title
 
 
 def window_title(hwnd: int) -> str:
@@ -247,3 +239,93 @@ def unregister_hotkey(hwnd: int, hotkey_id: int) -> None:
 
 def msg_from_address(address: int) -> wintypes.MSG:
     return wintypes.MSG.from_address(address)
+
+
+# -- platform interface (see base.py) ------------------------------------------
+
+window_exists = is_window
+target_rect = client_rect
+window_app = window_exe
+
+
+def frontmost_window(exclude_pid: int) -> int:
+    hwnd = foreground_window()
+    if not hwnd or window_pid(hwnd) == exclude_pid:
+        return 0
+    return hwnd
+
+
+def is_in_front(wid: int, own_pid: int) -> bool:
+    fg = foreground_window()
+    return not fg or fg == wid or window_pid(fg) == own_pid
+
+
+def prepare_overlay(widget: QWidget) -> None:
+    make_overlay_style(int(widget.winId()))
+
+
+def place_overlay(widget: QWidget, rect: Rect) -> None:
+    # Positioned in physical pixels with Win32 directly: converting to Qt's
+    # device-independent pixels would be lossy across mixed-DPI monitors.
+    hwnd = int(widget.winId())
+    if window_rect(hwnd) != rect:
+        place_topmost(hwnd, rect)
+
+
+def overlay_click_through(widget: QWidget, enabled: bool) -> None:
+    set_click_through(int(widget.winId()), enabled)
+
+
+def overlay_exclude_from_capture(widget: QWidget, enabled: bool) -> bool:
+    return set_exclude_from_capture(int(widget.winId()), enabled)
+
+
+def hotkey_label(letter: str) -> str:
+    return f"Ctrl+Alt+{letter.upper()}"
+
+
+class _HotkeySink(QWidget):
+    """Hidden window that receives WM_HOTKEY for registered hotkeys."""
+
+    def __init__(self, owner: "GlobalHotkeys") -> None:
+        super().__init__()
+        self._owner = owner
+
+    def nativeEvent(self, event_type, message):
+        if bytes(event_type) == b"windows_generic_MSG":
+            msg = msg_from_address(int(message))
+            if msg.message == WM_HOTKEY:
+                self._owner.activated.emit(int(msg.wParam))
+                return True, 0
+        return super().nativeEvent(event_type, message)
+
+
+class GlobalHotkeys(QObject):
+    """Ctrl+Alt+<letter> hotkeys that work while other apps have focus."""
+
+    activated = Signal(int)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._sink = _HotkeySink(self)
+        self._hwnd = int(self._sink.winId())
+        self._ids: list[int] = []
+        self._taken: list[str] = []
+
+    def register(self, hotkey_id: int, letter: str) -> bool:
+        if register_hotkey(self._hwnd, hotkey_id, MOD_CONTROL | MOD_ALT, ord(letter.upper())):
+            self._ids.append(hotkey_id)
+            return True
+        self._taken.append(hotkey_label(letter))
+        return False
+
+    def unregister_all(self) -> None:
+        for hotkey_id in self._ids:
+            unregister_hotkey(self._hwnd, hotkey_id)
+        self._ids.clear()
+
+    def problem(self) -> str | None:
+        if self._taken:
+            return (f"Hotkeys already in use (by another app or another copy of Telecaster): "
+                    f"{', '.join(self._taken)}")
+        return None

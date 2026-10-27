@@ -1,0 +1,110 @@
+name: Build & release
+
+# Push a tag like v0.2.0b1 to build installers for Windows and macOS and
+# publish them as a GitHub release (marked pre-release for a/b/rc versions).
+# Pushes to main and pull requests only run the tests and builds.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: windows-x64
+          - os: macos-latest
+            artifact: macos-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install -e ".[dev,build]"
+
+      - name: Unit tests
+        run: python -m pytest -q
+
+      - name: Platform smoke test
+        timeout-minutes: 3
+        run: python packaging/platform_smoke.py
+
+      - name: Build app
+        run: pyinstaller packaging/telecaster.spec --noconfirm
+
+      - name: Check version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version=$(python -c "import telecaster; print(telecaster.__version__)")
+          test "v$version" = "${GITHUB_REF_NAME}" || { echo "Tag ${GITHUB_REF_NAME} != version $version"; exit 1; }
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $p = Start-Process dist/Telecaster.exe -ArgumentList "--self-test" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
+          $version = python -c "import telecaster; print(telecaster.__version__)"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item dist/Telecaster.exe "out/Telecaster-$version-${{ matrix.artifact }}.exe"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        timeout-minutes: 3
+        run: |
+          dist/Telecaster.app/Contents/MacOS/Telecaster --self-test
+          version=$(python -c "import telecaster; print(telecaster.__version__)")
+          mkdir -p out
+          # ditto keeps the bundle's symlinks and signature intact.
+          ditto -c -k --keepParent dist/Telecaster.app "out/Telecaster-$version-${{ matrix.artifact }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: telecaster-${{ matrix.artifact }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Is this a pre-release?
+        id: kind
+        run: |
+          pip install -q packaging
+          echo "prerelease=$(python -c "from packaging.version import Version; print(str(Version('${GITHUB_REF_NAME#v}').is_prerelease).lower())")" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          prerelease: ${{ steps.kind.outputs.prerelease }}
+          generate_release_notes: true
+          body: |
+            ### Download
+            - **Windows 10/11:** `Telecaster-…-windows-x64.exe` — just run it. Windows SmartScreen may warn because the app isn't code-signed yet: click **More info → Run anyway**.
+            - **macOS 11+ on Apple Silicon (M1 or newer):** `Telecaster-…-macos-arm64.zip` — unzip and drag **Telecaster** to Applications. The app isn't notarized yet, so the first time, open it, then go to **System Settings → Privacy & Security** and click **Open Anyway**.
+
+            Intel Macs and Linux: install from source with `pip install git+https://github.com/FrankTreadwell/telecaster` (the relay server runs anywhere).
