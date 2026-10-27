@@ -111,8 +111,8 @@ class MainWindow(QWidget):
 
         role_box = QGroupBox("I am…")
         role_row = QHBoxLayout(role_box)
-        self.host_radio = QRadioButton("Streaming (host)")
-        self.viewer_radio = QRadioButton("Watching (viewer)")
+        self.host_radio = QRadioButton("Sharing my screen (host)")
+        self.viewer_radio = QRadioButton("Viewing a shared screen")
         self.role_group = QButtonGroup(self)
         self.role_group.addButton(self.host_radio)
         self.role_group.addButton(self.viewer_radio)
@@ -124,7 +124,7 @@ class MainWindow(QWidget):
         conn = QFormLayout(conn_box)
         self.conn_form = conn
         self.invite_edit = QLineEdit()
-        self.invite_edit.setPlaceholderText("Paste the invite link from the streamer")
+        self.invite_edit.setPlaceholderText("Paste the invite link from the person sharing")
         self.invite_edit.setClearButtonEnabled(True)
         conn.addRow("Invite link", self.invite_edit)
         self.invite_status = QLabel()
@@ -160,7 +160,8 @@ class MainWindow(QWidget):
         conn.addRow("Your name", self.name_edit)
         self.color_btn = QPushButton()
         conn.addRow("Pen color", self.color_btn)
-        self.connect_btn = QPushButton("Connect")
+        self.connect_btn = QPushButton()
+        self._running = False
         conn.addRow(self.connect_btn)
         self.status_label = QLabel("Not connected")
         self.status_label.setWordWrap(True)
@@ -203,12 +204,12 @@ class MainWindow(QWidget):
         win.addWidget(self.track_label)
         root.addWidget(win_box)
 
-        self.video_box = QGroupBox("Stream video area")
+        self.video_box = QGroupBox("Shared screen area")
         video = QVBoxLayout(self.video_box)
-        self.fit_check = QCheckBox("Match the streamer's aspect ratio (handles black bars)")
+        self.fit_check = QCheckBox("Match the shared window's aspect ratio (handles black bars)")
         video.addWidget(self.fit_check)
         video_row = QHBoxLayout()
-        self.calibrate_btn = QPushButton("Mark video area…")
+        self.calibrate_btn = QPushButton("Mark shared area…")
         self.reset_area_btn = QPushButton("Use whole window")
         video_row.addWidget(self.calibrate_btn)
         video_row.addWidget(self.reset_area_btn)
@@ -351,14 +352,22 @@ class MainWindow(QWidget):
         self.url_edit.setEnabled(not (host and self.relay_check.isChecked()))
         self.video_box.setVisible(not host)
         self.clear_all_btn.setVisible(host)
+        self._update_connect_label()
         if host:
             self.window_hint.setText(
-                "Choose the game window you are sharing in Discord. "
-                "Run games in borderless/windowed mode: overlays can't draw over exclusive fullscreen.")
+                "Choose the window you are sharing. Run games in borderless/windowed mode: "
+                "overlays can't draw over exclusive fullscreen.")
         else:
             self.window_hint.setText(
-                "Choose the Discord window (or popped-out stream window) showing the stream. "
-                "Full-screening the stream in Discord gives the most accurate lines.")
+                "Choose the window showing the shared screen. "
+                "Viewing it full screen (or popped out) gives the most accurate lines.")
+
+    def _update_connect_label(self) -> None:
+        hosting_relay = self.role == "host" and self.relay_check.isChecked()
+        if hosting_relay:
+            self.connect_btn.setText("Stop relay" if self._running else "Start relay")
+        else:
+            self.connect_btn.setText("Disconnect" if self._running else "Connect")
 
     def _set_color(self, color: str) -> None:
         if not QColor.isValidColorName(color):
@@ -403,7 +412,7 @@ class MainWindow(QWidget):
     # -- connection ----------------------------------------------------------
 
     def _toggle_connection(self) -> None:
-        if self.session.is_joined or self.connect_btn.text() == "Disconnect":
+        if self._running:
             self._disconnect()
         else:
             self._connect()
@@ -412,7 +421,7 @@ class MainWindow(QWidget):
         if self.role == "viewer" and not self.manual_check.isChecked():
             invite = parse_invite(self.invite_edit.text())
             if invite is None:
-                QMessageBox.information(self, "Telecaster", "Paste the invite link the streamer sent you.")
+                QMessageBox.information(self, "Telecaster", "Paste the invite link the host sent you.")
                 return
             self.url_edit.setText(invite[0])
             self.room_edit.setText(invite[1])
@@ -438,7 +447,8 @@ class MainWindow(QWidget):
             return
         self._save_settings()
         self.session.open(url, room, self.name_edit.text().strip(), self.overlay.pen_color, self.role)
-        self.connect_btn.setText("Disconnect")
+        self._running = True
+        self._update_connect_label()
         for widget in (self.host_radio, self.viewer_radio, self.room_edit, self.url_edit,
                        self.relay_check, self.port_spin, self.name_edit, self.color_btn, self.new_room_btn,
                        self.invite_edit, self.manual_check):
@@ -452,7 +462,7 @@ class MainWindow(QWidget):
     def _update_connect_button(self) -> None:
         if self.session.wants_connection:
             return
-        self.connect_btn.setText("Connect")
+        self._running = False
         for widget in (self.host_radio, self.viewer_radio, self.room_edit, self.relay_check,
                        self.port_spin, self.name_edit, self.color_btn, self.new_room_btn,
                        self.invite_edit, self.manual_check):
@@ -540,7 +550,7 @@ class MainWindow(QWidget):
         clipboard.setText(link)
         # Another app holding the Windows clipboard open makes the copy fail silently.
         copied = clipboard.text() == link
-        head = "Invite link copied — paste it in Discord." if copied else \
+        head = "Invite link copied — send it to your viewers." if copied else \
             "Couldn't reach the clipboard (another app may be using it); copy the link below by hand."
         self.invite_note.setText(f"{head} {note}\n{link}")
 
@@ -646,7 +656,7 @@ class MainWindow(QWidget):
 
     def _start_calibration(self) -> None:
         if not self.target_hwnd:
-            QMessageBox.information(self, "Telecaster", "Choose the Discord window first.")
+            QMessageBox.information(self, "Telecaster", "Choose the window showing the shared screen first.")
             return
         self.draw_btn.setChecked(False)
         self.overlay.set_mode("calibrate")
@@ -668,9 +678,9 @@ class MainWindow(QWidget):
         area = "whole window" if self.insets == Insets() else (
             "trimmed {} / {} / {} / {} px (left/top/right/bottom)".format(*self.insets.as_list()))
         if self.source_size:
-            src = f"streamer's window is {self.source_size[0]}×{self.source_size[1]}"
+            src = f"shared window is {self.source_size[0]}×{self.source_size[1]}"
         else:
-            src = "waiting for the streamer's window size"
+            src = "waiting for the shared window's size"
         self.insets_label.setText(f"Area: {area}; {src}.")
 
     # -- tracking loop -------------------------------------------------------

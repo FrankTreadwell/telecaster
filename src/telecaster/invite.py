@@ -1,4 +1,4 @@
-"""Invite links: one string a streamer shares that holds the relay address and room.
+"""Invite links: one string the host shares that holds the relay address and room.
 
     telecaster://join?relay=ws%3A%2F%2F203.0.113.7%3A8765&room=K7QX2M
 

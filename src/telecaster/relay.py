@@ -1,7 +1,7 @@
-"""Tiny WebSocket relay that connects a streamer with their viewers.
+"""Tiny WebSocket relay that connects the person sharing a screen with their viewers.
 
-Discord has no side channel for third-party data, so Telecaster clients meet
-in a "room" on this relay. It only validates and forwards messages; it keeps
+Screen-sharing apps have no side channel for third-party data, so Telecaster
+clients meet in a "room" on this relay. It only validates and forwards messages; it keeps
 no history except the host's window size, so late joiners can scale lines.
 
 Run standalone (only needs the ``websockets`` package):

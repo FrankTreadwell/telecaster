@@ -30,7 +30,7 @@ class Rect:
 class Insets:
     """Pixels trimmed from each edge of a window's client area.
 
-    Used on the viewer side to cut away Discord's UI around the stream video.
+    Used on the viewer side to cut away the viewing app's UI around the shared screen.
     Stored in pixels (not fractions) because app chrome stays a fixed size
     when the window is resized.
     """
@@ -63,7 +63,7 @@ def apply_insets(rect: Rect, insets: Insets) -> Rect:
 def fit_aspect(rect: Rect, aspect: float) -> Rect:
     """Largest rect of the given aspect ratio centered inside ``rect``.
 
-    Mirrors how video players (Discord included) letterbox or pillarbox a
+    Mirrors how video and screen-sharing apps letterbox or pillarbox a
     stream whose aspect ratio differs from the space it is shown in.
     """
     if rect.empty or aspect <= 0:

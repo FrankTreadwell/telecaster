@@ -5,19 +5,19 @@ build-backend = "hatchling.build"
 [project]
 name = "telecaster"
 version = "0.1.0"
-description = "Draw on a streamer's screen from the Discord stream you're watching."
+description = "Annotate a shared screen: viewers draw, and the marks appear as an overlay on the sharer's window."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
-keywords = ["discord", "overlay", "streaming", "telestrator", "drawing"]
+keywords = ["screen-sharing", "overlay", "annotation", "telestrator", "drawing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Win32 (MS Windows)",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
-    "Topic :: Games/Entertainment",
+    "Topic :: Communications :: Conferencing",
 ]
 dependencies = [
     "websockets>=13",

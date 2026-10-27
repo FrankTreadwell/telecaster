@@ -1,8 +1,8 @@
 """The transparent, always-on-top window laid exactly over the target window.
 
 The overlay never takes focus. In ``passive`` mode it is fully click-through,
-so the game (or Discord) keeps every click. In ``draw`` mode it captures the
-mouse so viewers can draw; ``calibrate`` lets a viewer box in the stream video.
+so the window underneath keeps every click. In ``draw`` mode it captures the
+mouse so viewers can draw; ``calibrate`` lets a viewer box in the shared screen.
 
 Positions are converted to [0, 1] against the overlay's own size, so DPI
 scaling and resolution differences between machines cancel out.
@@ -212,7 +212,7 @@ class Overlay(QWidget):
             painter.fillRect(self.rect(), QColor(0, 0, 0, 110))
             painter.setPen(QColor("white"))
             painter.drawText(self.rect().adjusted(0, 20, 0, 0), Qt.AlignHCenter | Qt.AlignTop,
-                             "Drag a box around the stream video.  Right-click to cancel.")
+                             "Drag a box around the shared screen.  Right-click to cancel.")
             if self._cal_start is not None and self._cal_end is not None:
                 sel = QRectF(self._cal_start, self._cal_end).normalized()
                 painter.setCompositionMode(QPainter.CompositionMode_Source)

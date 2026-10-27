@@ -1,3 +1,3 @@
-"""Telecaster: draw on a streamer's screen from the Discord stream you're watching."""
+"""Telecaster: annotate someone's shared screen and have the marks appear on their window."""
 
 __version__ = "0.1.0"

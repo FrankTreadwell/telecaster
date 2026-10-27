@@ -219,13 +219,13 @@ def set_ex_style_bits(hwnd: int, bits: int, enabled: bool) -> None:
 
 
 def make_overlay_style(hwnd: int) -> None:
-    """Never steal focus from the game/Discord, and stay out of Alt+Tab."""
+    """Never steal focus from the window underneath, and stay out of Alt+Tab."""
     set_ex_style_bits(hwnd, WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, True)
 
 
 def set_click_through(hwnd: int, enabled: bool) -> None:
     # A layered + transparent window is skipped by hit-testing entirely, so
-    # clicks reach whatever is underneath (the game, or Discord).
+    # clicks reach whatever is underneath (the shared window, or the viewing app).
     if enabled:
         set_ex_style_bits(hwnd, WS_EX_LAYERED | WS_EX_TRANSPARENT, True)
     else:

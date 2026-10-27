@@ -1,9 +1,9 @@
 """Wire protocol shared by the relay server and the desktop client.
 
 Every message is a JSON object with a ``t`` (type) field. All coordinates are
-normalized to the range [0, 1] relative to the shared video area, so a line
-drawn on a 1280x720 Discord stream lands in the same spot on a 2560x1440 game
-window. Pen widths are normalized to the height of the video area.
+normalized to the range [0, 1] relative to the shared area, so a line drawn
+on a 1280x720 view of a shared screen lands in the same spot on the 2560x1440
+window being shared. Pen widths are normalized to the height of that area.
 
 Client -> relay
     join    {room, name, color, role: "host"|"viewer", v}
