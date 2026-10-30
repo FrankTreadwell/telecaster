@@ -86,6 +86,12 @@ pip install git+https://github.com/FrankTreadwell/telecaster
 telecaster
 ```
 
+**Updates.** The downloaded app checks GitHub for a new release when it
+starts (turn this off under **Updates**). Click **Update to …** and it
+downloads the new build, checks it against GitHub's SHA-256, swaps it in and
+restarts. Beta builds are offered newer betas; stable builds get only stable
+releases. Installs from source just show the `pip install -U` command.
+
 ## Quick start
 
 **The person sharing**
@@ -188,6 +194,7 @@ Layout:
 | `relay.py`     | asyncio WebSocket relay (standalone or in a background thread) |
 | `geometry.py`  | Aspect fitting, insets, normalization (pure, tested)         |
 | `autocrop.py`  | Finds the video inside a viewing-app screenshot by its black bars |
+| `updater.py`   | Checks GitHub releases and swaps in the new build (Windows exe / macOS app) |
 | `strokes.py`   | Stroke/ping model with fading (pure, tested)                 |
 | `platforms/`   | Per-OS window list, tracking, click-through, hotkeys (`windows.py`, `macos.py`) |
 | `overlay.py`   | The transparent Qt overlay window: input and painting        |

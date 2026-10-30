@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QIcon, QImage, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __version__
+from . import __version__, updater
 from .autocrop import SAMPLE_SIZE, Gray, find_content
 from .geometry import Insets, Rect, apply_insets, fit_aspect, insets_from_selection
 from .invite import make_invite, parse_invite, relay_url_for_host
@@ -54,6 +54,7 @@ except ImportError as exc:  # unsupported OS, or a missing platform dependency
 TRACK_MS = 16
 PICK_SECONDS = 3
 AUTO_DETECT_SECONDS = 3
+UPDATE_CHECK_DELAY_MS = 3000
 PUBLIC_IP_URL = "https://api.ipify.org"
 ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -107,6 +108,10 @@ class MainWindow(QWidget):
         self._pick_left = 0
         self._net = QNetworkAccessManager(self)
         self._public_ip: str | None = None
+        self.updater = updater.Updater(self)
+        self._update: updater.Release | None = None
+        self._manual_update_check = False
+        self.relaunch_path: Path | None = None
 
         self._build_ui()
         self._load_settings()
@@ -118,6 +123,9 @@ class MainWindow(QWidget):
         self._track_timer = QTimer(self, interval=TRACK_MS)
         self._track_timer.timeout.connect(self._tick)
         self._track_timer.start()
+
+        if self.auto_update_check.isChecked() and "--self-test" not in sys.argv:
+            QTimer.singleShot(UPDATE_CHECK_DELAY_MS, lambda: self._check_for_updates(manual=False))
 
     # -- UI ------------------------------------------------------------------
 
@@ -263,6 +271,22 @@ class MainWindow(QWidget):
         opt.addWidget(self.hide_unfocused_check)
         opt.addWidget(self.exclude_capture_check)
         root.addWidget(opt_box)
+
+        update_box = QGroupBox("Updates")
+        upd = QVBoxLayout(update_box)
+        update_row = QHBoxLayout()
+        self.update_btn = QPushButton("Check for updates")
+        self.auto_update_check = QCheckBox("Check when Telecaster starts")
+        update_row.addWidget(self.update_btn)
+        update_row.addWidget(self.auto_update_check)
+        update_row.addStretch()
+        upd.addLayout(update_row)
+        self.update_label = QLabel(f"Version {__version__}")
+        self.update_label.setWordWrap(True)
+        self.update_label.setOpenExternalLinks(True)
+        self.update_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        upd.addWidget(self.update_label)
+        root.addWidget(update_box)
         root.addStretch()
 
     def _wire(self) -> None:
@@ -291,6 +315,13 @@ class MainWindow(QWidget):
         self.clear_mine_btn.clicked.connect(self.clear_mine)
         self.clear_all_btn.clicked.connect(self.clear_all)
         self.exclude_capture_check.toggled.connect(self.overlay.set_exclude_from_capture)
+        self.update_btn.clicked.connect(self._on_update_clicked)
+        self.updater.available.connect(self._on_update_available)
+        self.updater.up_to_date.connect(self._on_up_to_date)
+        self.updater.check_failed.connect(self._on_update_check_failed)
+        self.updater.progress.connect(self._on_update_progress)
+        self.updater.downloaded.connect(self._on_update_downloaded)
+        self.updater.download_failed.connect(self._on_update_failed)
 
         self.overlay.outgoing.connect(self.session.send)
         self.overlay.calibrated.connect(self._on_calibrated)
@@ -321,6 +352,7 @@ class MainWindow(QWidget):
         self.auto_area_check.setChecked(s.value("viewer/auto_area", True, type=bool))
         self.hide_unfocused_check.setChecked(s.value("hide_unfocused", True, type=bool))
         self.exclude_capture_check.setChecked(s.value("exclude_capture", True, type=bool))
+        self.auto_update_check.setChecked(s.value("updates/check", True, type=bool))
         self.overlay.set_exclude_from_capture(self.exclude_capture_check.isChecked())
         self.manual_check.setChecked(s.value("viewer/manual", False, type=bool))
         scope_index = self.invite_scope.findData(s.value("host/invite_scope", "public"))
@@ -347,6 +379,7 @@ class MainWindow(QWidget):
         s.setValue("viewer/insets", self.insets.as_list())
         s.setValue("hide_unfocused", self.hide_unfocused_check.isChecked())
         s.setValue("exclude_capture", self.exclude_capture_check.isChecked())
+        s.setValue("updates/check", self.auto_update_check.isChecked())
 
     # -- role / pen ----------------------------------------------------------
 
@@ -794,6 +827,74 @@ class MainWindow(QWidget):
             self.track_label.setText(
                 f"Tracking {client.w}×{client.h} window; overlay {region.w}×{region.h} at ({region.x}, {region.y})")
 
+    # -- updates -------------------------------------------------------------
+
+    def _check_for_updates(self, manual: bool) -> None:
+        self._manual_update_check = manual
+        if manual:
+            self.update_label.setText("Checking for updates…")
+        self.updater.check()
+
+    def _on_update_available(self, release: updater.Release) -> None:
+        self._update = release
+        news = f'Telecaster {release.version} is available (<a href="{release.page_url}">what\'s new</a>).'
+        target = updater.installed_path()
+        if target is None:
+            self.update_label.setText(f"{news} Update with:<br><code>{updater.PIP_COMMAND}</code>")
+            self._update = None
+        elif updater.can_replace(target):
+            self.update_label.setText(f"{news} Telecaster will restart to finish.")
+            self.update_btn.setText(f"Update to {release.version}")
+        else:
+            self.update_label.setText(f"{news} Telecaster can't update itself in {target.parent}, "
+                                      "so download it from the release page.")
+            self.update_btn.setText("Open download page")
+
+    def _on_up_to_date(self) -> None:
+        self.update_label.setText(f"Version {__version__}: you have the latest version.")
+
+    def _on_update_check_failed(self, reason: str) -> None:
+        if self._manual_update_check:
+            self.update_label.setText(f"Couldn't check for updates: {reason}")
+
+    def _on_update_clicked(self) -> None:
+        release = self._update
+        if release is None:
+            self._check_for_updates(manual=True)
+            return
+        target = updater.installed_path()
+        if target is None or not updater.can_replace(target):
+            QDesktopServices.openUrl(QUrl(release.page_url))
+            return
+        if self.session.is_joined or self.relay is not None:
+            stops_relay = " and stops the relay for everyone" if self.relay is not None else ""
+            answer = QMessageBox.question(
+                self, "Telecaster", f"Updating restarts Telecaster, which leaves the room{stops_relay}. Update now?")
+            if answer != QMessageBox.Yes:
+                return
+        self.update_btn.setEnabled(False)
+        self.update_label.setText(f"Downloading Telecaster {release.version}…")
+        self.updater.download(release, target)
+
+    def _on_update_progress(self, done: int, total: int) -> None:
+        if total > 0 and self._update:
+            self.update_label.setText(f"Downloading Telecaster {self._update.version}… {done * 100 // total}%")
+
+    def _on_update_downloaded(self, path: Path) -> None:
+        target = updater.installed_path()
+        try:
+            updater.install(target, path)
+        except OSError as exc:
+            self._on_update_failed(str(exc))
+            return
+        self.relaunch_path = target  # main() starts it once this copy has shut down
+        self.close()
+
+    def _on_update_failed(self, reason: str) -> None:
+        self.update_btn.setEnabled(True)
+        self.update_label.setText(f"The update didn't finish: {reason}. Try again, or download it from "
+                                  f'<a href="{updater.RELEASES_PAGE}">the release page</a>.')
+
     # -- hotkeys -------------------------------------------------------------
 
     def _register_hotkeys(self) -> None:
@@ -828,6 +929,7 @@ def main() -> None:
                              "The overlay supports Windows and macOS. "
                              "The relay server (telecaster-relay) runs anywhere.")
         sys.exit(1)
+    updater.cleanup()
     icon_path = Path(__file__).with_name("assets") / "icon.png"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
@@ -837,4 +939,8 @@ def main() -> None:
     if "--self-test" in sys.argv:
         # Used by CI on packaged builds: start up fully, then exit cleanly.
         QTimer.singleShot(2000, window.close)
-    sys.exit(app.exec())
+    code = app.exec()
+    if window.relaunch_path is not None:
+        # Started only now, after this copy has released its hotkeys and relay port.
+        updater.relaunch(window.relaunch_path)
+    sys.exit(code)
