@@ -15,7 +15,23 @@ def test_join_validation():
 def test_sanitize_drops_unknown_fields_and_clamps():
     msg = sanitize({"t": "begin", "sid": "1", "color": "#ff0000", "width": 5, "ttl": 2,
                     "p": [[1.5, -2]], "evil": "x"})
-    assert msg == {"t": "begin", "sid": "1", "color": "#ff0000", "width": 0.2, "ttl": 2.0, "p": [[1.0, 0.0]]}
+    assert msg == {"t": "begin", "sid": "1", "color": "#ff0000", "width": 0.2, "ttl": 2.0,
+                   "border": "#000000", "border_width": 0.0, "p": [[1.0, 0.0]]}
+
+
+def test_begin_border_is_validated_and_stored():
+    msg = sanitize({"t": "begin", "sid": "1", "color": "#ff0000", "width": 0.01, "ttl": 0,
+                    "border": "#FFFFFF", "border_width": 3, "p": [[0.5, 0.5]]})
+    assert msg["border"] == "#ffffff" and msg["border_width"] == 0.1
+    assert sanitize({"t": "begin", "sid": "1", "color": "#ff0000", "width": 0.01,
+                     "border": "white", "p": []}) is None
+    assert sanitize({"t": "begin", "sid": "1", "color": "#ff0000", "width": 0.01,
+                     "border_width": math.inf, "p": []}) is None
+
+    store = StrokeStore()
+    store.apply("a", msg, now=0)
+    stroke = store.strokes[("a", "1")]
+    assert (stroke.color, stroke.border, stroke.border_width) == ("#ff0000", "#ffffff", 0.1)
 
 
 def test_sanitize_rejects_bad_input():

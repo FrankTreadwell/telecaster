@@ -181,8 +181,6 @@ class MainWindow(QWidget):
         self.name_edit = QLineEdit()
         self.name_edit.setMaxLength(32)
         conn.addRow("Your name", self.name_edit)
-        self.color_btn = QPushButton()
-        conn.addRow("Pen color", self.color_btn)
         self.connect_btn = QPushButton()
         self._running = False
         conn.addRow(self.connect_btn)
@@ -247,8 +245,15 @@ class MainWindow(QWidget):
 
         pen_box = QGroupBox("Drawing")
         pen = QFormLayout(pen_box)
+        self.color_btn = QPushButton()
+        pen.addRow("Fill color", self.color_btn)
         self.width_spin = QSpinBox(minimum=1, maximum=60, value=6, suffix=" px @1080p")
-        pen.addRow("Line width", self.width_spin)
+        pen.addRow("Fill weight", self.width_spin)
+        self.border_color_btn = QPushButton()
+        pen.addRow("Border color", self.border_color_btn)
+        self.border_width_spin = QSpinBox(minimum=0, maximum=30, value=0, suffix=" px @1080p")
+        self.border_width_spin.setSpecialValueText("none")
+        pen.addRow("Border weight", self.border_width_spin)
         self.ttl_spin = QDoubleSpinBox(minimum=0, maximum=600, value=4, decimals=1, suffix=" s")
         self.ttl_spin.setSpecialValueText("never")
         pen.addRow("Fade after", self.ttl_spin)
@@ -293,6 +298,7 @@ class MainWindow(QWidget):
         self.host_radio.toggled.connect(self._on_role_changed)
         self.new_room_btn.clicked.connect(lambda: self.room_edit.setText(new_room_code()))
         self.color_btn.clicked.connect(self._choose_color)
+        self.border_color_btn.clicked.connect(self._choose_border_color)
         self.connect_btn.clicked.connect(self._toggle_connection)
         self.relay_check.toggled.connect(self._update_role_ui)
         self.manual_check.toggled.connect(self._update_role_ui)
@@ -310,6 +316,7 @@ class MainWindow(QWidget):
         self.calibrate_btn.clicked.connect(self._start_calibration)
         self.reset_area_btn.clicked.connect(self._use_whole_window)
         self.width_spin.valueChanged.connect(self._apply_pen)
+        self.border_width_spin.valueChanged.connect(self._apply_pen)
         self.ttl_spin.valueChanged.connect(self._apply_pen)
         self.draw_btn.toggled.connect(self._on_draw_toggled)
         self.clear_mine_btn.clicked.connect(self.clear_mine)
@@ -347,6 +354,8 @@ class MainWindow(QWidget):
         self.name_edit.setText(s.value("name", "") or os.environ.get("USERNAME", "player"))
         self._set_color(s.value("color", "#ff3b30"))
         self.width_spin.setValue(s.value("pen/width", 6, type=int))
+        self._set_border_color(s.value("pen/border_color", "#000000"))
+        self.border_width_spin.setValue(s.value("pen/border_width", 0, type=int))
         self.ttl_spin.setValue(s.value("pen/ttl", 4.0, type=float))
         self.fit_check.setChecked(s.value("viewer/fit", True, type=bool))
         self.auto_area_check.setChecked(s.value("viewer/auto_area", True, type=bool))
@@ -371,6 +380,8 @@ class MainWindow(QWidget):
         s.setValue("name", self.name_edit.text().strip())
         s.setValue("color", self.overlay.pen_color)
         s.setValue("pen/width", self.width_spin.value())
+        s.setValue("pen/border_color", self.overlay.pen_border)
+        s.setValue("pen/border_width", self.border_width_spin.value())
         s.setValue("pen/ttl", self.ttl_spin.value())
         s.setValue("viewer/fit", self.fit_check.isChecked())
         s.setValue("viewer/auto_area", self.auto_area_check.isChecked())
@@ -425,23 +436,43 @@ class MainWindow(QWidget):
         else:
             self.connect_btn.setText("Disconnect" if self._running else "Connect")
 
-    def _set_color(self, color: str) -> None:
+    @staticmethod
+    def _show_color(button: QPushButton, color: str, fallback: str) -> str:
         if not QColor.isValidColorName(color):
-            color = "#ff3b30"
+            color = fallback
         color = QColor(color).name()
-        self.overlay.pen_color = color
         swatch = QPixmap(16, 16)
         swatch.fill(QColor(color))
-        self.color_btn.setIcon(QIcon(swatch))
-        self.color_btn.setText(color)
+        button.setIcon(QIcon(swatch))
+        button.setText(color)
+        return color
+
+    def _set_color(self, color: str) -> None:
+        # Each stroke carries its own color, so a change applies to the next
+        # line at once; the session keeps it for its next (re)join.
+        color = self._show_color(self.color_btn, color, "#ff3b30")
+        self.overlay.pen_color = color
+        self.overlay.update()  # the draw-mode frame uses the pen color
+        self.session.set_color(color)
+
+    def _set_border_color(self, color: str) -> None:
+        self.overlay.pen_border = self._show_color(self.border_color_btn, color, "#000000")
 
     def _choose_color(self) -> None:
-        color = QColorDialog.getColor(QColor(self.overlay.pen_color), self, "Pen color")
+        color = QColorDialog.getColor(QColor(self.overlay.pen_color), self, "Fill color")
         if color.isValid():
             self._set_color(color.name())
+            self.settings.setValue("color", self.overlay.pen_color)
+
+    def _choose_border_color(self) -> None:
+        color = QColorDialog.getColor(QColor(self.overlay.pen_border), self, "Border color")
+        if color.isValid():
+            self._set_border_color(color.name())
+            self.settings.setValue("pen/border_color", self.overlay.pen_border)
 
     def _apply_pen(self) -> None:
         self.overlay.pen_width = self.width_spin.value() / 1080
+        self.overlay.pen_border_width = self.border_width_spin.value() / 1080
         self.overlay.pen_ttl = float(self.ttl_spin.value())
 
     def _on_draw_toggled(self, on: bool) -> None:
@@ -506,7 +537,7 @@ class MainWindow(QWidget):
         self._running = True
         self._update_connect_label()
         for widget in (self.host_radio, self.viewer_radio, self.room_edit, self.url_edit,
-                       self.relay_check, self.port_spin, self.name_edit, self.color_btn, self.new_room_btn,
+                       self.relay_check, self.port_spin, self.name_edit, self.new_room_btn,
                        self.invite_edit, self.manual_check):
             widget.setEnabled(False)
 
@@ -520,7 +551,7 @@ class MainWindow(QWidget):
             return
         self._running = False
         for widget in (self.host_radio, self.viewer_radio, self.room_edit, self.relay_check,
-                       self.port_spin, self.name_edit, self.color_btn, self.new_room_btn,
+                       self.port_spin, self.name_edit, self.new_room_btn,
                        self.invite_edit, self.manual_check):
             widget.setEnabled(True)
         self._update_role_ui()

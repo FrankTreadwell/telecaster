@@ -15,11 +15,13 @@ Point = tuple[float, float]
 @dataclass
 class Stroke:
     owner: str
-    color: str
-    width: float  # fraction of the video area's height
+    color: str  # fill
+    width: float  # fill width, as a fraction of the video area's height
     ttl: float  # seconds visible after the pen lifts; 0 = until cleared
     points: list[Point] = field(default_factory=list)
     ended_at: float | None = None
+    border: str = "#000000"
+    border_width: float = 0.0  # outline on each side of the fill; same units as width
 
     def alpha(self, now: float) -> float:
         if self.ended_at is None or self.ttl <= 0:
@@ -55,10 +57,11 @@ class StrokeStore:
         self.pings: list[Ping] = []
 
     def begin(self, owner: str, sid: str, color: str, width: float, ttl: float,
-              points: list[Point], now: float) -> None:
+              points: list[Point], now: float, border: str = "#000000", border_width: float = 0.0) -> None:
         key = (owner, sid)
         self.strokes.pop(key, None)
-        self.strokes[key] = Stroke(owner, color, width, ttl, list(points)[:MAX_POINTS_PER_STROKE])
+        self.strokes[key] = Stroke(owner, color, width, ttl, list(points)[:MAX_POINTS_PER_STROKE],
+                                   border=border, border_width=border_width)
         while len(self.strokes) > MAX_STROKES:
             del self.strokes[next(iter(self.strokes))]
 
@@ -107,7 +110,8 @@ class StrokeStore:
         t = msg["t"]
         if t == "begin":
             self.begin(owner, msg["sid"], msg["color"], msg["width"], msg["ttl"],
-                       [tuple(p) for p in msg["p"]], now)
+                       [tuple(p) for p in msg["p"]], now,
+                       msg.get("border", "#000000"), msg.get("border_width", 0.0))
         elif t == "pts":
             self.extend(owner, msg["sid"], [tuple(p) for p in msg["p"]])
         elif t == "end":

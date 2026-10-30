@@ -15,7 +15,7 @@ import math
 import time
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 from .geometry import Rect, normalize
@@ -51,6 +51,8 @@ class Overlay(QWidget):
         self.mode = "passive"
         self.pen_color = "#ff3b30"
         self.pen_width = 6 / 1080
+        self.pen_border = "#000000"
+        self.pen_border_width = 0.0
         self.pen_ttl = 4.0
         self.exclude_from_capture = False
 
@@ -140,9 +142,10 @@ class Overlay(QWidget):
             pt = self._norm(pos)
             self._last_px = pos
             self.store.begin(LOCAL, self._sid, self.pen_color, self.pen_width, self.pen_ttl,
-                             [tuple(pt)], time.monotonic())
+                             [tuple(pt)], time.monotonic(), self.pen_border, self.pen_border_width)
             self.outgoing.emit({"t": "begin", "sid": self._sid, "color": self.pen_color,
-                                "width": self.pen_width, "ttl": self.pen_ttl, "p": [pt]})
+                                "width": self.pen_width, "ttl": self.pen_ttl, "border": self.pen_border,
+                                "border_width": self.pen_border_width, "p": [pt]})
             self._flush_timer.start()
             self.update()
 
@@ -225,18 +228,39 @@ class Overlay(QWidget):
             alpha = stroke.alpha(now)
             if alpha <= 0 or not stroke.points:
                 continue
-            color = QColor(stroke.color)
-            color.setAlphaF(alpha)
-            pen = QPen(color, max(1.0, stroke.width * h), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-            painter.setPen(pen)
+            fill_px = max(1.0, stroke.width * h)
+            border_px = stroke.border_width * h
             x0, y0 = stroke.points[0]
-            if len(stroke.points) == 1:
-                painter.drawPoint(QPointF(x0 * w, y0 * h))
-                continue
             path = QPainterPath(QPointF(x0 * w, y0 * h))
             for x, y in stroke.points[1:]:
                 path.lineTo(x * w, y * h)
-            painter.drawPath(path)
+            if len(stroke.points) == 1:
+                path.lineTo(x0 * w + 0.01, y0 * h)  # a dot: round caps make it a circle
+            if border_px < 0.5:
+                color = QColor(stroke.color)
+                color.setAlphaF(alpha)
+                painter.setPen(QPen(color, fill_px, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                painter.drawPath(path)
+            elif alpha >= 1:
+                _paint_outlined(painter, path, stroke.color, fill_px, stroke.border, border_px)
+            else:
+                # Fading: paint opaque into a layer, then fade the layer, so the
+                # border doesn't show through the half-transparent fill.
+                reach = (fill_px / 2 + border_px + 2)
+                box = path.boundingRect().adjusted(-reach, -reach, reach, reach).toAlignedRect()
+                box = box.intersected(self.rect())
+                if box.isEmpty():
+                    continue
+                layer = QImage(box.size(), QImage.Format_ARGB32_Premultiplied)
+                layer.fill(0)
+                lp = QPainter(layer)
+                lp.setRenderHint(QPainter.Antialiasing)
+                lp.translate(-box.x(), -box.y())
+                _paint_outlined(lp, path, stroke.color, fill_px, stroke.border, border_px)
+                lp.end()
+                painter.setOpacity(alpha)
+                painter.drawImage(box.topLeft(), layer)
+                painter.setOpacity(1.0)
 
         painter.setBrush(Qt.NoBrush)
         for ping in self.store.pings:
@@ -253,3 +277,12 @@ class Overlay(QWidget):
                 painter.setPen(QPen(color, max(2.0, h * 0.004)))
                 radius = h * 0.05 * p
                 painter.drawEllipse(center, radius, radius)
+
+
+def _paint_outlined(painter: QPainter, path: QPainterPath, fill: str, fill_px: float,
+                    border: str, border_px: float) -> None:
+    """Draw ``path`` as a ``fill`` line with a ``border`` outline on each side."""
+    painter.setPen(QPen(QColor(border), fill_px + 2 * border_px, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    painter.drawPath(path)
+    painter.setPen(QPen(QColor(fill), fill_px, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    painter.drawPath(path)

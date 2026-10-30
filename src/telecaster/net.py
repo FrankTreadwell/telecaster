@@ -53,6 +53,11 @@ class Session(QObject):
         self._ws.abort()
         self._open()
 
+    def set_color(self, color: str) -> None:
+        """Use ``color`` in the join message from now on, so a reconnect keeps it."""
+        if self._join:
+            self._join["color"] = color
+
     def close(self) -> None:
         self._wanted = False
         self._retry.stop()

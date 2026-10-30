@@ -8,7 +8,9 @@ window being shared. Pen widths are normalized to the height of that area.
 Client -> relay
     join    {room, name, color, role: "host"|"viewer", v}
     source  {aspect, w, h}                       (host only; cached for late joiners)
-    begin   {sid, color, width, ttl, p: [[x, y], ...]}
+    begin   {sid, color, width, ttl, border, border_width, p: [[x, y], ...]}
+                                                 (color/width are the fill; border/border_width
+                                                 outline it on each side and are optional)
     pts     {sid, p: [[x, y], ...]}
     end     {sid}
     ping    {p: [x, y], color}                   (a "look here" ripple)
@@ -141,9 +143,12 @@ def sanitize(msg: Any) -> dict | None:
         width = _finite(msg.get("width"), 0.0005, 0.2)
         ttl = _finite(msg.get("ttl", 0), 0.0, 600.0)
         color = _color(msg.get("color"))
-        if None in (sid, pts, width, ttl, color):
+        border = _color(msg.get("border", "#000000"))
+        border_width = _finite(msg.get("border_width", 0), 0.0, 0.1)
+        if None in (sid, pts, width, ttl, color, border, border_width):
             return None
-        return {"t": t, "sid": sid, "color": color, "width": width, "ttl": ttl, "p": pts}
+        return {"t": t, "sid": sid, "color": color, "width": width, "ttl": ttl,
+                "border": border, "border_width": border_width, "p": pts}
 
     if t == "pts":
         sid = _sid(msg.get("sid"))
