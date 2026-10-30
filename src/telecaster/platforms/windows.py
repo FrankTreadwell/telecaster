@@ -12,6 +12,7 @@ import sys
 from ctypes import wintypes
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QWidget
 
 from ..geometry import Rect
@@ -21,6 +22,7 @@ if sys.platform != "win32":  # pragma: no cover - selected by platforms/__init__
     raise ImportError("telecaster.platforms.windows is only available on Windows")
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
+gdi32 = ctypes.WinDLL("gdi32")
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 dwmapi = ctypes.WinDLL("dwmapi")
 
@@ -43,6 +45,9 @@ DWMWA_CLOAKED = 14
 WDA_NONE = 0x0
 WDA_EXCLUDEFROMCAPTURE = 0x11
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PW_CLIENTONLY = 0x1
+PW_RENDERFULLCONTENT = 0x2  # also captures GPU-composed content (browsers, Electron apps)
+DIB_RGB_COLORS = 0
 
 WM_HOTKEY = 0x0312
 MOD_ALT = 0x0001
@@ -91,6 +96,28 @@ kernel32.QueryFullProcessImageNameW.argtypes = [
     wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
 ]
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+gdi32.CreateCompatibleDC.restype = wintypes.HDC
+gdi32.CreateDIBSection.argtypes = [
+    wintypes.HDC, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.DWORD,
+]
+gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+gdi32.SelectObject.restype = wintypes.HGDIOBJ
+gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+gdi32.DeleteDC.argtypes = [wintypes.HDC]
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG), ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD),
+    ]
+
 
 dwmapi.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
 
@@ -182,6 +209,34 @@ def window_rect(hwnd: int) -> Rect | None:
     return Rect(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top)
 
 
+def capture_client(hwnd: int) -> QImage | None:
+    """A screenshot of the window's client area, even if other windows cover it."""
+    rect = client_rect(hwnd)
+    if rect is None:
+        return None
+    header = BITMAPINFOHEADER(
+        biSize=ctypes.sizeof(BITMAPINFOHEADER), biWidth=rect.w, biHeight=-rect.h,  # negative: top-down rows
+        biPlanes=1, biBitCount=32,
+    )
+    bits = ctypes.c_void_p()
+    dc = gdi32.CreateCompatibleDC(None)
+    bitmap = gdi32.CreateDIBSection(dc, ctypes.byref(header), DIB_RGB_COLORS, ctypes.byref(bits), None, 0)
+    if not dc or not bitmap or not bits:
+        gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(dc)
+        return None
+    old = gdi32.SelectObject(dc, bitmap)
+    try:
+        if not user32.PrintWindow(hwnd, dc, PW_CLIENTONLY | PW_RENDERFULLCONTENT):
+            return None
+        data = ctypes.string_at(bits, rect.w * rect.h * 4)
+        return QImage(data, rect.w, rect.h, rect.w * 4, QImage.Format_RGB32).copy()
+    finally:
+        gdi32.SelectObject(dc, old)
+        gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(dc)
+
+
 def foreground_window() -> int:
     hwnd = user32.GetForegroundWindow()
     if not hwnd:
@@ -246,6 +301,7 @@ def msg_from_address(address: int) -> wintypes.MSG:
 window_exists = is_window
 target_rect = client_rect
 window_app = window_exe
+capture_window = capture_client
 
 
 def frontmost_window(exclude_pid: int) -> int:

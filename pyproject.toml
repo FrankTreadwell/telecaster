@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "telecaster"
-version = "0.2.0b1"
+version = "0.2.0b2"
 description = "Annotate a shared screen: viewers draw, and the marks appear as an overlay on the sharer's window."
 readme = "README.md"
 license = "MIT"

@@ -17,9 +17,10 @@ exact same spot, even when the sharer runs at 1440p and the viewer watches a
   window as it moves and resizes, matching its client area exactly.
 - **Resolution independent.** Marks are sent in normalized coordinates, so
   they scale between any sharer/viewer resolutions and DPI settings.
-- **Handles letterboxing.** Viewers' overlays fit the shared window's aspect
-  ratio inside their view, and they can mark the exact shared area once to
-  cut away the viewing app's own buttons and panels.
+- **Finds the video for you.** Viewers' overlays find the stream inside the
+  viewing app by its black bars, cutting away the app's own buttons and
+  panels, and follow it when the window resizes. They can also mark the
+  shared area by hand.
 - **Fading ink and pings.** Marks fade after a few seconds (configurable, or
   never); right-click for a "look here" ripple.
 - **One link to join.** The sharer starts a relay and copies an invite link;
@@ -73,8 +74,10 @@ Download the latest build from the
 
   macOS will also ask for two optional permissions:
   - **Accessibility**, so the hotkeys work while another app is in front.
-  - **Screen Recording**, only so the window picker can show window titles
-    (otherwise windows are listed by app name). Telecaster never records.
+  - **Screen Recording**, so the window picker can show window titles
+    (otherwise windows are listed by app name) and viewers can find the
+    video by its black bars. Telecaster looks at single snapshots of the
+    chosen window and never records or sends them.
 
 **From source** (any Python 3.10+, including Intel Macs):
 
@@ -105,9 +108,11 @@ telecaster
    paste it into **Invite link**). Press **Connect**.
 2. Choose the window that shows the shared screen. Viewing it full screen
    (or popped out) gives the most accurate marks.
-3. If the viewing app's buttons or panels surround the shared image, click
-   **Mark shared area…** and drag a box around the image once. It's
-   remembered as pixel margins, so resizing the window keeps working.
+3. Telecaster finds the shared image by the black bars around it (Discord,
+   Zoom and most players show streams on black) and re-checks when the
+   window resizes. If it can't — say, the stream fills the view with no
+   bars — click **Mark shared area…** and drag a box around the image once.
+   (On macOS, detection needs Screen Recording permission.)
 4. Press **Ctrl+Alt+D** to toggle draw mode, draw with the left mouse button,
    right-click to ping. Press **Ctrl+Alt+D** again to give clicks back to the
    window underneath.
@@ -182,6 +187,7 @@ Layout:
 | `invite.py`    | Invite link format (relay address + room in one string)     |
 | `relay.py`     | asyncio WebSocket relay (standalone or in a background thread) |
 | `geometry.py`  | Aspect fitting, insets, normalization (pure, tested)         |
+| `autocrop.py`  | Finds the video inside a viewing-app screenshot by its black bars |
 | `strokes.py`   | Stroke/ping model with fading (pure, tested)                 |
 | `platforms/`   | Per-OS window list, tracking, click-through, hotkeys (`windows.py`, `macos.py`) |
 | `overlay.py`   | The transparent Qt overlay window: input and painting        |

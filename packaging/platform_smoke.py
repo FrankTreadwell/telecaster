@@ -46,6 +46,8 @@ rect = platform.target_rect(wid)
 print("target rect:", rect)
 assert rect is not None and rect.w > 0 and rect.h > 0
 print("listed windows:", len(platform.list_windows()))
+shot = platform.capture_window(wid)
+print("captured:", None if shot is None else shot.size())
 platform.frontmost_window(exclude_pid=-1)
 platform.is_in_front(wid, 0)
 

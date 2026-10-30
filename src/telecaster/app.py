@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtGui import QColor, QIcon, QImage, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
+from .autocrop import SAMPLE_SIZE, Gray, find_content
 from .geometry import Insets, Rect, apply_insets, fit_aspect, insets_from_selection
 from .invite import make_invite, parse_invite, relay_url_for_host
 from .protocol import sanitize, valid_room
@@ -52,6 +53,7 @@ except ImportError as exc:  # unsupported OS, or a missing platform dependency
 
 TRACK_MS = 16
 PICK_SECONDS = 3
+AUTO_DETECT_SECONDS = 3
 PUBLIC_IP_URL = "https://api.ipify.org"
 ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -65,6 +67,11 @@ def hotkey_label(hotkey_id: int) -> str:
 
 def new_room_code() -> str:
     return "".join(secrets.choice(ROOM_ALPHABET) for _ in range(6))
+
+
+def gray_image(image: QImage) -> Gray:
+    g = image.convertToFormat(QImage.Format_Grayscale8)
+    return Gray(g.width(), g.height(), bytes(g.constBits()), g.bytesPerLine())
 
 
 def lan_ip() -> str:
@@ -95,6 +102,8 @@ class MainWindow(QWidget):
         self.insets = Insets.from_list(self.settings.value("viewer/insets", [0, 0, 0, 0]))
         self._sent_size: tuple[int, int] | None = None
         self._last_region: Rect | None = None
+        self._detected_size: tuple[int, int] | None = None
+        self._next_detect = 0.0
         self._pick_left = 0
         self._net = QNetworkAccessManager(self)
         self._public_ip: str | None = None
@@ -214,9 +223,13 @@ class MainWindow(QWidget):
         video = QVBoxLayout(self.video_box)
         self.fit_check = QCheckBox("Match the shared window's aspect ratio (handles black bars)")
         video.addWidget(self.fit_check)
+        self.auto_area_check = QCheckBox("Find the video by its black bars, and follow it as the window changes")
+        video.addWidget(self.auto_area_check)
         video_row = QHBoxLayout()
+        self.detect_btn = QPushButton("Detect video now")
         self.calibrate_btn = QPushButton("Mark shared area…")
         self.reset_area_btn = QPushButton("Use whole window")
+        video_row.addWidget(self.detect_btn)
         video_row.addWidget(self.calibrate_btn)
         video_row.addWidget(self.reset_area_btn)
         video.addLayout(video_row)
@@ -268,8 +281,10 @@ class MainWindow(QWidget):
         self.pick_btn.clicked.connect(self._start_pick)
         self.window_combo.activated.connect(self._on_combo_activated)
         self.fit_check.toggled.connect(lambda _: self._update_insets_label())
+        self.auto_area_check.toggled.connect(self._on_auto_area_toggled)
+        self.detect_btn.clicked.connect(lambda: self._detect_area(quiet=False))
         self.calibrate_btn.clicked.connect(self._start_calibration)
-        self.reset_area_btn.clicked.connect(lambda: self._set_insets(Insets()))
+        self.reset_area_btn.clicked.connect(self._use_whole_window)
         self.width_spin.valueChanged.connect(self._apply_pen)
         self.ttl_spin.valueChanged.connect(self._apply_pen)
         self.draw_btn.toggled.connect(self._on_draw_toggled)
@@ -303,6 +318,7 @@ class MainWindow(QWidget):
         self.width_spin.setValue(s.value("pen/width", 6, type=int))
         self.ttl_spin.setValue(s.value("pen/ttl", 4.0, type=float))
         self.fit_check.setChecked(s.value("viewer/fit", True, type=bool))
+        self.auto_area_check.setChecked(s.value("viewer/auto_area", True, type=bool))
         self.hide_unfocused_check.setChecked(s.value("hide_unfocused", True, type=bool))
         self.exclude_capture_check.setChecked(s.value("exclude_capture", True, type=bool))
         self.overlay.set_exclude_from_capture(self.exclude_capture_check.isChecked())
@@ -325,6 +341,7 @@ class MainWindow(QWidget):
         s.setValue("pen/width", self.width_spin.value())
         s.setValue("pen/ttl", self.ttl_spin.value())
         s.setValue("viewer/fit", self.fit_check.isChecked())
+        s.setValue("viewer/auto_area", self.auto_area_check.isChecked())
         s.setValue("viewer/manual", self.manual_check.isChecked())
         s.setValue("host/invite_scope", self.invite_scope.currentData())
         s.setValue("viewer/insets", self.insets.as_list())
@@ -584,6 +601,8 @@ class MainWindow(QWidget):
         self.overlay.refresh()
 
     def _set_source(self, source: dict) -> None:
+        if source["aspect"] != self.source_aspect:
+            self._detected_size = None  # the shape to look for changed
         self.source_aspect = source["aspect"]
         self.source_size = (source["w"], source["h"])
         self._update_insets_label()
@@ -629,6 +648,8 @@ class MainWindow(QWidget):
         self.target_wid = wid
         self._sent_size = None
         self._last_region = None
+        self._detected_size = None
+        self._next_detect = 0.0
         if wid:
             self.settings.setValue(f"{self.role}/target_title", platform.window_title(wid))
             self.settings.setValue(f"{self.role}/target_exe", platform.window_app(wid))
@@ -669,11 +690,49 @@ class MainWindow(QWidget):
 
     def _on_calibrated(self, fx: float, fy: float, fw: float, fh: float) -> None:
         self.overlay.set_mode("passive")
+        self.auto_area_check.setChecked(False)  # a hand-marked area shouldn't be overwritten
         client = platform.target_rect(self.target_wid)
         if client is None:
             return
+        self._set_area(client, fx, fy, fw, fh)
+
+    def _set_area(self, client: Rect, fx: float, fy: float, fw: float, fh: float) -> None:
+        """Use the part of ``client`` given as fractions of its size."""
         sel = Rect(round(fx * client.w), round(fy * client.h), round(fw * client.w), round(fh * client.h))
         self._set_insets(insets_from_selection(client, sel))
+
+    def _use_whole_window(self) -> None:
+        self.auto_area_check.setChecked(False)
+        self._set_insets(Insets())
+
+    def _on_auto_area_toggled(self, on: bool) -> None:
+        self._detected_size = None
+        self._next_detect = 0.0
+        self.settings.setValue("viewer/auto_area", on)
+
+    def _detect_area(self, quiet: bool) -> bool:
+        """Crop to the video framed by black bars in the target window."""
+        def fail(text: str) -> bool:
+            if not quiet:
+                QMessageBox.information(self, "Telecaster", text)
+            return False
+
+        if not self.target_wid:
+            return fail("Choose the window showing the shared screen first.")
+        client = platform.target_rect(self.target_wid)
+        image = platform.capture_window(self.target_wid) if client else None
+        if image is None or image.isNull():
+            return fail("Couldn't take a picture of that window to look for the video. "
+                        "On macOS, Telecaster needs Screen Recording permission for this.")
+        small = image.scaled(SAMPLE_SIZE, SAMPLE_SIZE, Qt.KeepAspectRatio, Qt.FastTransformation)
+        found = find_content(gray_image(small), gray_image(image), self.source_aspect)
+        self._detected_size = (client.w, client.h)
+        if found is None:
+            return fail("Couldn't find a video surrounded by black bars. Make sure the stream is "
+                        "playing and visible, or use Mark shared area… instead.")
+        w, h = image.width(), image.height()
+        self._set_area(client, found.x / w, found.y / h, found.w / w, found.h / h)
+        return True
 
     def _set_insets(self, insets: Insets) -> None:
         self.insets = insets
@@ -720,6 +779,13 @@ class MainWindow(QWidget):
         if self.role == "host" and self.session.is_joined and self._sent_size != (client.w, client.h):
             self._sent_size = (client.w, client.h)
             self.session.send({"t": "source", "aspect": client.w / client.h, "w": client.w, "h": client.h})
+
+        if (self.role == "viewer" and self.auto_area_check.isChecked() and self.overlay.mode == "passive"
+                and self._detected_size != (client.w, client.h) and time.monotonic() >= self._next_detect):
+            # Re-detect after a resize; also retries while no video is showing yet.
+            self._next_detect = time.monotonic() + AUTO_DETECT_SECONDS
+            if not self._detect_area(quiet=True):
+                self._detected_size = None
 
         region = self._region_for(client)
         self.overlay.place(region)

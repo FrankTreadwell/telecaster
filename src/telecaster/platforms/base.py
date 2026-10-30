@@ -10,6 +10,8 @@ Windows to track (``wid`` is an OS window id):
     window_title(wid) / window_app(wid) / window_pid(wid)
     frontmost_window(exclude_pid) -> wid or 0
     is_in_front(wid, own_pid) -> bool
+    capture_window(wid) -> QImage | None   screenshot of exactly target_rect (any
+                                            pixel density); None if not possible
 
 The overlay (a QWidget):
     prepare_overlay(widget)

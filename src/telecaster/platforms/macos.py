@@ -19,6 +19,8 @@ if sys.platform != "darwin":  # pragma: no cover - selected by platforms/__init_
 
 import objc
 from AppKit import (
+    NSBitmapImageFileTypePNG,
+    NSBitmapImageRep,
     NSEvent,
     NSEventMaskKeyDown,
     NSEventModifierFlagCommand,
@@ -36,11 +38,15 @@ from AppKit import (
 )
 from ApplicationServices import AXIsProcessTrusted, AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
 from PySide6.QtCore import QObject, QRect, Signal
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QWidget
 from Quartz import (
+    CGRectNull,
     CGWindowListCopyWindowInfo,
+    CGWindowListCreateImage,
     kCGNullWindowID,
     kCGWindowBounds,
+    kCGWindowImageBoundsIgnoreFraming,
     kCGWindowIsOnscreen,
     kCGWindowLayer,
     kCGWindowListExcludeDesktopElements,
@@ -137,6 +143,25 @@ def frontmost_window(exclude_pid: int) -> int:
         if entry.get(kCGWindowOwnerPID) == pid and entry.get(kCGWindowLayer, 0) == 0:
             return int(entry[kCGWindowNumber])
     return 0
+
+
+def capture_window(wid: int) -> QImage | None:
+    """The whole window (target_rect covers the frame too), even if covered.
+
+    Needs Screen Recording permission; without it macOS returns only the
+    desktop wallpaper or nothing.
+    """
+    try:
+        image = CGWindowListCreateImage(
+            CGRectNull, kCGWindowListOptionIncludingWindow, wid, kCGWindowImageBoundsIgnoreFraming)
+        if image is None:
+            return None
+        png = NSBitmapImageRep.alloc().initWithCGImage_(image).representationUsingType_properties_(
+            NSBitmapImageFileTypePNG, None)
+    except Exception:  # API unavailable on this macOS version
+        return None
+    result = QImage.fromData(bytes(png)) if png is not None else QImage()
+    return None if result.isNull() else result
 
 
 def is_in_front(wid: int, own_pid: int) -> bool:
