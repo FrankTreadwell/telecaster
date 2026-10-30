@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPixmap
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,10 +25,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenuBar,
     QMessageBox,
     QPushButton,
     QRadioButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -131,7 +133,12 @@ class MainWindow(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        self._build_menu(root)
+        self.tabs = QTabWidget()
+        root.addWidget(self.tabs)
 
+        room_tab = QWidget()
+        room_page = QVBoxLayout(room_tab)
         role_box = QGroupBox("I am…")
         role_row = QHBoxLayout(role_box)
         self.host_radio = QRadioButton("Sharing my screen (host)")
@@ -141,9 +148,9 @@ class MainWindow(QWidget):
         self.role_group.addButton(self.viewer_radio)
         role_row.addWidget(self.host_radio)
         role_row.addWidget(self.viewer_radio)
-        root.addWidget(role_box)
+        room_page.addWidget(role_box)
 
-        conn_box = QGroupBox("Room")
+        conn_box = QGroupBox("Connection")
         conn = QFormLayout(conn_box)
         self.conn_form = conn
         self.invite_edit = QLineEdit()
@@ -204,8 +211,12 @@ class MainWindow(QWidget):
         self.invite_note.setWordWrap(True)
         self.invite_note.setTextInteractionFlags(Qt.TextSelectableByMouse)
         conn.addRow(self.invite_note)
-        root.addWidget(conn_box)
+        room_page.addWidget(conn_box)
+        room_page.addStretch()
+        self.tabs.addTab(room_tab, "Room")
 
+        window_tab = QWidget()
+        window_page = QVBoxLayout(window_tab)
         win_box = QGroupBox("Window to draw on")
         win = QVBoxLayout(win_box)
         self.window_hint = QLabel()
@@ -223,7 +234,7 @@ class MainWindow(QWidget):
         win.addLayout(win_row)
         self.track_label = QLabel("No window selected")
         win.addWidget(self.track_label)
-        root.addWidget(win_box)
+        window_page.addWidget(win_box)
 
         self.video_box = QGroupBox("Shared screen area")
         video = QVBoxLayout(self.video_box)
@@ -241,10 +252,12 @@ class MainWindow(QWidget):
         video.addLayout(video_row)
         self.insets_label = QLabel()
         video.addWidget(self.insets_label)
-        root.addWidget(self.video_box)
+        window_page.addWidget(self.video_box)
+        window_page.addStretch()
+        self.tabs.addTab(window_tab, "Window")
 
-        pen_box = QGroupBox("Drawing")
-        pen = QFormLayout(pen_box)
+        pen_tab = QWidget()
+        pen = QFormLayout(pen_tab)
         self.color_btn = QPushButton()
         pen.addRow("Fill color", self.color_btn)
         self.width_spin = QSpinBox(minimum=1, maximum=60, value=6, suffix=" px @1080p")
@@ -267,32 +280,41 @@ class MainWindow(QWidget):
         clear_row.addWidget(self.clear_all_btn)
         pen.addRow(clear_row)
         pen.addRow(QLabel("Left-drag draws, right-click pings. Draw mode blocks clicks to the window underneath."))
-        root.addWidget(pen_box)
+        self.tabs.addTab(pen_tab, "Drawing")
 
-        opt_box = QGroupBox("Options")
-        opt = QVBoxLayout(opt_box)
-        self.hide_unfocused_check = QCheckBox("Hide overlay while the window isn't in front")
-        self.exclude_capture_check = QCheckBox("Keep the overlay out of screen captures")
-        opt.addWidget(self.hide_unfocused_check)
-        opt.addWidget(self.exclude_capture_check)
-        root.addWidget(opt_box)
-
-        update_box = QGroupBox("Updates")
-        upd = QVBoxLayout(update_box)
-        update_row = QHBoxLayout()
-        self.update_btn = QPushButton("Check for updates")
-        self.auto_update_check = QCheckBox("Check when Telecaster starts")
-        update_row.addWidget(self.update_btn)
-        update_row.addWidget(self.auto_update_check)
-        update_row.addStretch()
-        upd.addLayout(update_row)
-        self.update_label = QLabel(f"Version {__version__}")
+        # Update news needs links, which a menu can't show; it appears here when there is some.
+        self.update_label = QLabel()
         self.update_label.setWordWrap(True)
         self.update_label.setOpenExternalLinks(True)
         self.update_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        upd.addWidget(self.update_label)
-        root.addWidget(update_box)
-        root.addStretch()
+        self.update_label.hide()
+        root.addWidget(self.update_label)
+
+    def _build_menu(self, root: QVBoxLayout) -> None:
+        menu_bar = QMenuBar(self)
+        root.setMenuBar(menu_bar)
+        file_menu = menu_bar.addMenu("&File")
+
+        options = file_menu.addMenu("&Options")
+        self.hide_unfocused_check = options.addAction("Hide overlay while the window isn't in front")
+        self.exclude_capture_check = options.addAction("Keep the overlay out of screen captures")
+
+        updates = file_menu.addMenu("&Updates")
+        self.update_btn = updates.addAction("Check for updates")
+        self.auto_update_check = updates.addAction("Check when Telecaster starts")
+        version = updates.addAction(f"Version {__version__}")
+        version.setEnabled(False)
+
+        for action in (self.hide_unfocused_check, self.exclude_capture_check, self.auto_update_check):
+            action.setCheckable(True)
+        file_menu.addSeparator()
+        quit_action = file_menu.addAction("&Quit")
+        quit_action.setMenuRole(QAction.QuitRole)
+        quit_action.triggered.connect(self.close)
+        # Keep macOS from moving these into the application menu by their wording.
+        for action in (self.hide_unfocused_check, self.exclude_capture_check, self.update_btn,
+                       self.auto_update_check, version):
+            action.setMenuRole(QAction.NoRole)
 
     def _wire(self) -> None:
         self.host_radio.toggled.connect(self._on_role_changed)
@@ -322,7 +344,7 @@ class MainWindow(QWidget):
         self.clear_mine_btn.clicked.connect(self.clear_mine)
         self.clear_all_btn.clicked.connect(self.clear_all)
         self.exclude_capture_check.toggled.connect(self.overlay.set_exclude_from_capture)
-        self.update_btn.clicked.connect(self._on_update_clicked)
+        self.update_btn.triggered.connect(self._on_update_clicked)
         self.updater.available.connect(self._on_update_available)
         self.updater.up_to_date.connect(self._on_up_to_date)
         self.updater.check_failed.connect(self._on_update_check_failed)
@@ -362,6 +384,7 @@ class MainWindow(QWidget):
         self.hide_unfocused_check.setChecked(s.value("hide_unfocused", True, type=bool))
         self.exclude_capture_check.setChecked(s.value("exclude_capture", True, type=bool))
         self.auto_update_check.setChecked(s.value("updates/check", True, type=bool))
+        self.tabs.setCurrentIndex(s.value("ui/tab", 0, type=int))
         self.overlay.set_exclude_from_capture(self.exclude_capture_check.isChecked())
         self.manual_check.setChecked(s.value("viewer/manual", False, type=bool))
         scope_index = self.invite_scope.findData(s.value("host/invite_scope", "public"))
@@ -391,6 +414,7 @@ class MainWindow(QWidget):
         s.setValue("hide_unfocused", self.hide_unfocused_check.isChecked())
         s.setValue("exclude_capture", self.exclude_capture_check.isChecked())
         s.setValue("updates/check", self.auto_update_check.isChecked())
+        s.setValue("ui/tab", self.tabs.currentIndex())
 
     # -- role / pen ----------------------------------------------------------
 
@@ -860,10 +884,14 @@ class MainWindow(QWidget):
 
     # -- updates -------------------------------------------------------------
 
+    def _show_update(self, text: str) -> None:
+        self.update_label.setText(text)
+        self.update_label.show()
+
     def _check_for_updates(self, manual: bool) -> None:
         self._manual_update_check = manual
         if manual:
-            self.update_label.setText("Checking for updates…")
+            self._show_update("Checking for updates…")
         self.updater.check()
 
     def _on_update_available(self, release: updater.Release) -> None:
@@ -871,22 +899,23 @@ class MainWindow(QWidget):
         news = f'Telecaster {release.version} is available (<a href="{release.page_url}">what\'s new</a>).'
         target = updater.installed_path()
         if target is None:
-            self.update_label.setText(f"{news} Update with:<br><code>{updater.PIP_COMMAND}</code>")
+            self._show_update(f"{news} Update with:<br><code>{updater.PIP_COMMAND}</code>")
             self._update = None
         elif updater.can_replace(target):
-            self.update_label.setText(f"{news} Telecaster will restart to finish.")
+            self._show_update(f"{news} Telecaster will restart to finish.")
             self.update_btn.setText(f"Update to {release.version}")
         else:
-            self.update_label.setText(f"{news} Telecaster can't update itself in {target.parent}, "
+            self._show_update(f"{news} Telecaster can't update itself in {target.parent}, "
                                       "so download it from the release page.")
             self.update_btn.setText("Open download page")
 
     def _on_up_to_date(self) -> None:
-        self.update_label.setText(f"Version {__version__}: you have the latest version.")
+        if self._manual_update_check:
+            self._show_update(f"Version {__version__}: you have the latest version.")
 
     def _on_update_check_failed(self, reason: str) -> None:
         if self._manual_update_check:
-            self.update_label.setText(f"Couldn't check for updates: {reason}")
+            self._show_update(f"Couldn't check for updates: {reason}")
 
     def _on_update_clicked(self) -> None:
         release = self._update
@@ -904,12 +933,12 @@ class MainWindow(QWidget):
             if answer != QMessageBox.Yes:
                 return
         self.update_btn.setEnabled(False)
-        self.update_label.setText(f"Downloading Telecaster {release.version}…")
+        self._show_update(f"Downloading Telecaster {release.version}…")
         self.updater.download(release, target)
 
     def _on_update_progress(self, done: int, total: int) -> None:
         if total > 0 and self._update:
-            self.update_label.setText(f"Downloading Telecaster {self._update.version}… {done * 100 // total}%")
+            self._show_update(f"Downloading Telecaster {self._update.version}… {done * 100 // total}%")
 
     def _on_update_downloaded(self, path: Path) -> None:
         target = updater.installed_path()
@@ -923,7 +952,7 @@ class MainWindow(QWidget):
 
     def _on_update_failed(self, reason: str) -> None:
         self.update_btn.setEnabled(True)
-        self.update_label.setText(f"The update didn't finish: {reason}. Try again, or download it from "
+        self._show_update(f"The update didn't finish: {reason}. Try again, or download it from "
                                   f'<a href="{updater.RELEASES_PAGE}">the release page</a>.')
 
     # -- hotkeys -------------------------------------------------------------
