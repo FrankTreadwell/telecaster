@@ -55,7 +55,7 @@ class Overlay(QWidget):
         self.pen_width = 6 / 1080
         self.pen_border = "#000000"
         self.pen_border_width = 0.0
-        self.pen_ttl = 4.0
+        self.pen_ttl = 1.0
         self.exclude_from_capture = False
 
         self._sids = itertools.count(1)
