@@ -942,12 +942,13 @@ class MainWindow(QWidget):
 
     def _on_update_downloaded(self, path: Path) -> None:
         target = updater.installed_path()
+        dest = updater.install_destination(target, self._update)
         try:
-            updater.install(target, path)
+            updater.install(target, path, dest)
         except OSError as exc:
             self._on_update_failed(str(exc))
             return
-        self.relaunch_path = target  # main() starts it once this copy has shut down
+        self.relaunch_path = dest  # main() starts it once this copy has shut down
         self.close()
 
     def _on_update_failed(self, reason: str) -> None:
@@ -973,6 +974,8 @@ class MainWindow(QWidget):
             action()
 
     def closeEvent(self, event) -> None:
+        # Stop tracking first: a tick after this would show the overlay again.
+        self._track_timer.stop()
         self._save_settings()
         self.hotkeys.unregister_all()
         self.session.close()

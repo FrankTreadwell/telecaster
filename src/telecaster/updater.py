@@ -5,7 +5,9 @@ this OS, and swaps it in for the running copy:
 
 * Windows: the running exe can't be overwritten, but it can be renamed. So
   ``Telecaster.exe`` becomes ``Telecaster.exe.old``, the download takes its
-  place, and the new copy deletes the old one on its next start.
+  place, and the new copy deletes the old one on its next start. An exe
+  still named like the release download (``Telecaster-0.2.0b3-windows-x64.exe``)
+  is renamed for the new version instead of keeping the old version's name.
 * macOS: the zip is unpacked next to the app and the two bundles swap names.
 
 Installs from source (pip) are only told that a new version exists.
@@ -158,16 +160,28 @@ def cleanup(target: Path | None = None) -> None:
     shutil.rmtree(target.parent / MAC_STAGING, ignore_errors=True)
 
 
-def install(target: Path, download: Path) -> None:
-    """Swap the downloaded build in for ``target``. Raises OSError on failure, leaving ``target`` intact."""
+def install_destination(target: Path, release: Release, current: str = __version__) -> Path:
+    """Where the new build goes: ``target``, unless its name is this version's release download."""
+    if release.asset_name and target.name == release.asset_name.replace(release.version, current):
+        return target.with_name(release.asset_name)
+    return target
+
+
+def install(target: Path, download: Path, dest: Path | None = None) -> None:
+    """Swap the downloaded build in for ``target``, at ``dest`` if given.
+
+    Raises OSError on failure, leaving ``target`` intact.
+    """
     if target.suffix == ".app":
         _install_app(target, download)
         return
-    old = target.with_name(target.name + ".old")
+    dest = dest or target
+    # Named after dest, so the new copy's cleanup() finds and deletes it.
+    old = dest.with_name(dest.name + ".old")
     old.unlink(missing_ok=True)
     os.replace(target, old)
     try:
-        os.replace(download, target)
+        os.replace(download, dest)
     except OSError:
         os.replace(old, target)
         raise

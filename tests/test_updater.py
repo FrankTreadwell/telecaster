@@ -1,4 +1,5 @@
-from telecaster.updater import cleanup, install, is_prerelease, parse_version, pick_update
+from telecaster.updater import (Release, cleanup, install, install_destination, is_prerelease, parse_version,
+                                pick_update)
 
 EXE = "-windows-x64.exe"
 
@@ -69,3 +70,24 @@ def test_swap_running_exe(tmp_path):
     cleanup(exe)
     assert not (tmp_path / "Telecaster.exe.old").exists()
     assert exe.read_bytes() == b"new"
+
+
+def test_versioned_exe_takes_the_new_versions_name(tmp_path):
+    exe = tmp_path / "Telecaster-0.2.0b3-windows-x64.exe"
+    exe.write_bytes(b"old")
+    download = tmp_path / (exe.name + ".download")
+    download.write_bytes(b"new")
+    new = Release("0.2.0b4", "page", "Telecaster-0.2.0b4-windows-x64.exe", "url")
+    dest = install_destination(exe, new, current="0.2.0b3")
+    assert dest == tmp_path / "Telecaster-0.2.0b4-windows-x64.exe"
+    install(exe, download, dest)
+    assert dest.read_bytes() == b"new"
+    assert not exe.exists() and not download.exists()
+    cleanup(dest)
+    assert sorted(p.name for p in tmp_path.iterdir()) == [dest.name]
+
+
+def test_renamed_exe_keeps_its_name(tmp_path):
+    new = Release("0.2.0b4", "page", "Telecaster-0.2.0b4-windows-x64.exe", "url")
+    exe = tmp_path / "Telecaster.exe"
+    assert install_destination(exe, new, current="0.2.0b3") == exe

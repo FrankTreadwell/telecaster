@@ -45,6 +45,8 @@ class Overlay(QWidget):
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        # Only the control window decides when the app quits.
+        self.setAttribute(Qt.WA_QuitOnClose, False)
         self.setWindowTitle("Telecaster overlay")
 
         self.store = store
